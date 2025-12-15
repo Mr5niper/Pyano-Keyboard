@@ -2,19 +2,22 @@ import logging
 import os
 import threading
 from datetime import datetime
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 from pathlib import Path
 import time
 from functools import wraps
 import sys
 import re
 import shutil
+import json
 import numpy as np
 import pygame
 import soundfile as sf
+
 # Setup Logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pc_keyboard_piano")
+
 # Setup Profiler (Fix 5)
 def timed(threshold: float = 0.1):
     def deco(func):
@@ -28,6 +31,7 @@ def timed(threshold: float = 0.1):
             return out
         return wrapper
     return deco
+
 # Helper functions for environment variable validation (A2)
 def get_mixer_buffer() -> int:
     try:
@@ -39,6 +43,7 @@ def get_mixer_buffer() -> int:
     except ValueError:
         logger.warning("Invalid PIANO_MIXER_BUFFER value, using 64")
         return 64
+
 def get_mixer_freq() -> Optional[int]:
     freq_str = os.environ.get("PIANO_MIXER_FREQ")
     if not freq_str:
@@ -52,12 +57,14 @@ def get_mixer_freq() -> Optional[int]:
     except ValueError:
         logger.warning("Invalid PIANO_MIXER_FREQ value, ignoring")
         return None
+
 # Optional MP3 export dependency
 try:
     from pydub import AudioSegment
     PYDUB_AVAILABLE = True
 except Exception:
     PYDUB_AVAILABLE = False
+
 # -------------------------
 # Audio/Display Settings
 # -------------------------
@@ -66,14 +73,16 @@ BIT_DEPTH = -16      # 16-bit signed
 CHANNELS = 2
 MIXER_BUFFER = get_mixer_buffer()
 PREF_FREQ = get_mixer_freq()
-# CRITICAL: Set audio driver BEFORE any pygame init (Fix 1)
+
+# Set audio driver BEFORE any pygame init
 if 'SDL_AUDIODRIVER' not in os.environ:
     if os.name == 'nt':
-        os.environ['SDL_AUDIODRIVER'] = 'wasapi'  # modern low latency
+        os.environ['SDL_AUDIODRIVER'] = 'wasapi'
     elif sys.platform == 'darwin':
         os.environ['SDL_AUDIODRIVER'] = 'coreaudio'
     else:
         os.environ['SDL_AUDIODRIVER'] = 'pulseaudio'
+
 def init_mixer() -> Tuple[bool, Optional[int], Optional[int]]:
     freqs = [PREF_FREQ] if PREF_FREQ is not None else [44100]
     for freq in freqs:
@@ -105,6 +114,7 @@ def init_mixer() -> Tuple[bool, Optional[int], Optional[int]]:
                 continue
     logger.error("Audio mixer failed to initialize. Sound is disabled.")
     return False, None, None
+
 class AudioConfig:
     def __init__(self):
         self.ok: bool = False
@@ -112,16 +122,19 @@ class AudioConfig:
         self.buffer: Optional[int] = None
     def init(self):
         self.ok, self.freq, self.buffer = init_mixer()
+
 pygame.init()
 try:
     if pygame.mixer.get_init():
         pygame.mixer.quit()
 except Exception:
     pass
+
 AUDIO = AudioConfig()
 AUDIO.init()
 if not AUDIO.ok:
     print("Audio mixer failed to initialize. Sound is disabled.")
+
 # -------------------------
 # UI Constants
 # -------------------------
@@ -136,6 +149,7 @@ RED = (255, 70, 70)
 GREEN = (50, 205, 50)
 BLUE = (70, 130, 255)
 INFO_COLOR = (160, 160, 160)
+
 # -------------------------
 # Functional Constants & Safety Limits
 # -------------------------
@@ -147,11 +161,13 @@ MAX_TAKES = 64
 MAX_RECORD_SECONDS = 900
 MAX_RENDER_SECONDS = 600
 MAX_TOTAL_SAMPLES = MAX_RENDER_SECONDS * SAMPLE_RATE
+
 # Path safety setup
 RECORDINGS_DIR = Path("recordings").resolve()
 RECORDINGS_DIR.mkdir(exist_ok=True)
 SAFE_FILENAME_RE = re.compile(r'^[\w\-. ]{1,128}$')
 RESERVED_WIN = {'con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'lpt1', 'lpt2', 'lpt3'}
+
 def safepath(filename: str) -> Path:
     filename = Path(filename).name
     if not SAFE_FILENAME_RE.match(filename):
@@ -163,9 +179,11 @@ def safepath(filename: str) -> Path:
     path = (RECORDINGS_DIR / filename).resolve()
     path.relative_to(RECORDINGS_DIR)
     return path
+
 # Type Aliases
 EventRecord = Tuple[float, str, Optional[int]]
 NoteRecord = Tuple[int, float, float]
+
 # -------------------------
 # Musical Helpers
 # -------------------------
@@ -178,19 +196,54 @@ def midi_to_name(midi_note: int) -> str:
     octave = (midi_note // 12) - 1
     name = NOTE_NAMES[midi_note % 12]
     return f"{name}{octave}"
+
 MIN_MIDI = 24
 MAX_MIDI = 108
+
 # -------------------------
-# Key Mapping (F3..B4)
+# Piano span (F3..B4)
 # -------------------------
-KEY_TO_MIDI = {
-    # White keys A - ' (11)
-    'a': 53, 's': 55, 'd': 57, 'f': 59, 'g': 60,
-    'h': 62, 'j': 64, 'k': 65, 'l': 67, ';': 69, "'": 71,
-    # Black keys W E R  Y U  O P [
-    'w': 54, 'e': 56, 'r': 58, 'y': 61, 'u': 63, 'o': 66, 'p': 68, '[': 70,
+WHITE_MIDIS = [53, 55, 57, 59, 60, 62, 64, 65, 67, 69, 71]
+BLACK_MIDIS = [54, 56, 58, 61, 63, 66, 68, 70]
+BASE_MIDIS = sorted(WHITE_MIDIS + BLACK_MIDIS)
+
+# Default PC-key mapping (by keycodes, not characters)
+DEFAULT_KC_TO_MIDI: Dict[int, int] = {
+    pygame.K_a: 53, pygame.K_s: 55, pygame.K_d: 57, pygame.K_f: 59, pygame.K_g: 60,
+    pygame.K_h: 62, pygame.K_j: 64, pygame.K_k: 65, pygame.K_l: 67, pygame.K_SEMICOLON: 69, pygame.K_QUOTE: 71,
+    pygame.K_w: 54, pygame.K_e: 56, pygame.K_r: 58, pygame.K_y: 61, pygame.K_u: 63,
+    pygame.K_o: 66, pygame.K_p: 68, pygame.K_LEFTBRACKET: 70,
 }
-BASE_MIDIS = sorted(set(KEY_TO_MIDI.values()))
+
+KEYMAP_FILE = Path("keymap.json")
+
+def load_user_keymap() -> Optional[Dict[int, int]]:
+    if not KEYMAP_FILE.exists():
+        return None
+    try:
+        raw = json.load(open(KEYMAP_FILE, "r", encoding="utf-8"))
+        out = {}
+        for k, v in raw.items():
+            kc = int(k)
+            midi = int(v)
+            if midi in BASE_MIDIS:
+                out[kc] = midi
+        # Ensure 1:1 (no duplicated keycodes or weird midis)
+        if not out:
+            return None
+        return out
+    except Exception as e:
+        logger.warning(f"Failed to load keymap.json: {e}")
+        return None
+
+def save_user_keymap(kc_to_midi: Dict[int, int]):
+    try:
+        data = {str(k): int(v) for k, v in kc_to_midi.items() if v in BASE_MIDIS}
+        with open(KEYMAP_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to save keymap.json: {e}")
+
 # -------------------------
 # Synthesizer
 # -------------------------
@@ -270,6 +323,7 @@ class Synth:
             self.clear_cache()
         except Exception:
             pass
+
 # -------------------------
 # Modular Audio Processor (Reverb & Stereoization)
 # -------------------------
@@ -308,6 +362,7 @@ def apply_reverb_stereo(mono: np.ndarray, sr: int, wet: float) -> np.ndarray:
     if peak_final > 0.99:
         stereo = stereo / peak_final * 0.99
     return stereo.astype(np.float32)
+
 # -------------------------
 # Metronome
 # -------------------------
@@ -361,14 +416,15 @@ class Metronome:
         if snd:
             snd.play()
         self.beat_counter += 1
+
 # -------------------------
 # Piano Key UI + Playback
 # -------------------------
 class PianoKey:
-    def __init__(self, x, y, width, height, base_midi, kb_key, is_black, synth: Synth):
+    def __init__(self, x, y, width, height, base_midi, kb_label, is_black, synth: Synth):
         self.rect = pygame.Rect(x, y, width, height)
         self.base_midi = base_midi
-        self.kb = kb_key.upper()
+        self.kb = kb_label  # display label (string)
         self.is_black = is_black
         self.is_pressed = False
         self.synth = synth
@@ -422,10 +478,11 @@ class PianoKey:
             shine_surf = pygame.Surface((shine.width, shine.height), pygame.SRCALPHA)
             shine_surf.fill((255, 255, 255, 20))
             surface.blit(shine_surf, shine.topleft)
-        label = font.render(self.kb, True, text_color)
+        label = font.render(self.kb, True, (240,240,245) if self.is_black else (30,30,35))
         surface.blit(label, label.get_rect(center=(self.rect.centerx, self.rect.bottom - 35)))
-        nlabel = note_font.render(name, True, text_color)
+        nlabel = note_font.render(name, True, (240,240,245) if self.is_black else (30,30,35))
         surface.blit(nlabel, nlabel.get_rect(center=(self.rect.centerx, self.rect.bottom - 15)))
+
 # -------------------------
 # Recorder
 # -------------------------
@@ -794,10 +851,23 @@ class Recorder:
             self.set_status("Preview stopped.", DARK_GRAY, 1500)
         except Exception:
             pass
+
 # -------------------------
 # Piano Application
 # -------------------------
 class PianoApp:
+    RESERVED_KC = {
+        # Number row (app controls)
+        pygame.K_0, pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4,
+        pygame.K_5, pygame.K_6, pygame.K_7, pygame.K_8, pygame.K_9,
+        # Function keys
+        pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4, pygame.K_F5, pygame.K_F6,
+        pygame.K_F7, pygame.K_F8, pygame.K_F9, pygame.K_F10, pygame.K_F11, pygame.K_F12,
+        # Modifiers / control
+        pygame.K_TAB, pygame.K_LSHIFT, pygame.K_RSHIFT, pygame.K_SPACE, pygame.K_ESCAPE,
+        pygame.K_RETURN, pygame.K_BACKSPACE,
+    }
+
     def __init__(self, audio_config: AudioConfig):
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("PC Keyboard Piano | Grandmaster Build")
@@ -805,12 +875,16 @@ class PianoApp:
         self.font = pygame.font.Font(None, 28)
         self.small_font = pygame.font.Font(None, 22)
         self.note_font = pygame.font.Font(None, 20)
+
         self.audio_config = audio_config
         self.synth = Synth(self.audio_config)
         self.recorder = Recorder(self.synth, self)
-        self.keys = []
-        self.key_dict = {}
-        self.pressed_keys = {}
+        self.keys: List[PianoKey] = []
+        self.key_dict = {}  # not used for input anymore; display only
+        self.midi_to_key: Dict[int, PianoKey] = {}  # MIDI note -> PianoKey UI
+        self.kc_to_midi: Dict[int, int] = {}  # active mapping (loaded / learned)
+        self.pressed_kc: Dict[int, Tuple[PianoKey, int]] = {}  # keycode -> (PianoKey, midi)
+
         self.mouse_notes_active = {}
         self.sustain = False
         self.master_volume = 0.9
@@ -823,8 +897,24 @@ class PianoApp:
         self.status_until = 0
         self.cache_total = len(BASE_MIDIS)
         self.cache_ready = 0
-        self._last_down = set()  # running set used by _scan_notes
+
+        # Mapping mode state
+        self.mapping_mode = False
+        self._map_sequence: List[int] = WHITE_MIDIS + BLACK_MIDIS
+        self._map_index = 0
+        self._temp_map: Dict[int, int] = {}
+
         self._create_piano_keys()
+
+        # Load keymap (user) or fallback to default
+        user_map = load_user_keymap()
+        if user_map:
+            self.apply_keymap(user_map)
+            self.set_status("Loaded custom keymap (F11 reset, F12 remap).", BLUE, 2500)
+        else:
+            self.apply_keymap(DEFAULT_KC_TO_MIDI.copy())
+            self.set_status("Using default keymap (F11 reset, F12 remap).", BLUE, 2000)
+
         if self.audio_config.ok:
             self.set_status("Loading sounds...", INFO_COLOR, 99999)
             self._warmup_cache_blocking()
@@ -841,6 +931,7 @@ class PianoApp:
                         ch.stop()
                 except:
                     pass
+
     def _warmup_cache_blocking(self):
         if not self.audio_config.ok:
             return
@@ -862,6 +953,7 @@ class PianoApp:
                     ch.stop()
         pygame.mixer.stop()
         pygame.time.wait(50)
+
     def __enter__(self):
         return self
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -874,93 +966,73 @@ class PianoApp:
         except Exception:
             pass
         return False
+
     def set_status(self, msg, color=DARK_GRAY, ms=2500):
         self.status_message = msg
         self.status_color = color
         self.status_until = pygame.time.get_ticks() + ms
+
     def _create_piano_keys(self):
         white_w = 90
         white_h = 380
         black_w = 58
         black_h = 240
         start_y = 180
-        white_key_notes = [53, 55, 57, 59, 60, 62, 64, 65, 67, 69, 71]
-        white_chars = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', "'"]
         total_width = 11 * white_w
         start_x = (WIDTH - total_width) // 2
+        self.keys.clear()
+        self.midi_to_key.clear()
         white_positions = {}
-        for i, (char, midi) in enumerate(zip(white_chars, white_key_notes)):
+        # White keys
+        for i, midi in enumerate(WHITE_MIDIS):
             x = start_x + i * white_w
-            key = PianoKey(x, start_y, white_w, white_h, midi, char, is_black=False, synth=self.synth)
+            key = PianoKey(x, start_y, white_w, white_h, midi, kb_label='', is_black=False, synth=self.synth)
             self.keys.append(key)
-            self.key_dict[char] = key
             white_positions[midi] = x
-        black_mapping = {
-            'w': (54, 53, 55),
-            'e': (56, 55, 57),
-            'r': (58, 57, 59),
-            'y': (61, 60, 62),
-            'u': (63, 62, 64),
-            'o': (66, 65, 67),
-            'p': (68, 67, 69),
-            '[': (70, 69, 71),
-        }
-        for char, (midi, left_midi, right_midi) in black_mapping.items():
+            self.midi_to_key[midi] = key
+        # Black keys with placement based on neighbors
+        black_specs = [
+            (54, 53, 55),
+            (56, 55, 57),
+            (58, 57, 59),
+            (61, 60, 62),
+            (63, 62, 64),
+            (66, 65, 67),
+            (68, 67, 69),
+            (70, 69, 71),
+        ]
+        for midi, left_midi, right_midi in black_specs:
             left_x = white_positions[left_midi]
             x = left_x + white_w - (black_w // 2)
-            key = PianoKey(x, start_y, black_w, black_h, midi, char, is_black=True, synth=self.synth)
+            key = PianoKey(x, start_y, black_w, black_h, midi, kb_label='', is_black=True, synth=self.synth)
             self.keys.append(key)
-            self.key_dict[char] = key
+            self.midi_to_key[midi] = key
         self.keys.sort(key=lambda k: (k.is_black, k.rect.x))
-        self.min_base_midi = 53
-        self.max_base_midi = 71
-    def find_key_at(self, pos):
-        for key in self.keys:
-            if key.is_black and key.rect.collidepoint(pos):
-                return key
-        for key in self.keys:
-            if not key.is_black and key.rect.collidepoint(pos):
-                return key
-        return None
-    def _keycode_to_char(self, k):
-        code_map = {
-            pygame.K_a:'a', pygame.K_s:'s', pygame.K_d:'d', pygame.K_f:'f',
-            pygame.K_g:'g', pygame.K_h:'h', pygame.K_j:'j', pygame.K_k:'k',
-            pygame.K_l:'l', pygame.K_SEMICOLON:';', pygame.K_QUOTE:"'",
-            pygame.K_w:'w', pygame.K_e:'e', pygame.K_r:'r',
-            pygame.K_y:'y', pygame.K_u:'u',
-            pygame.K_o:'o', pygame.K_p:'p', pygame.K_LEFTBRACKET:'[',
-        }
-        return code_map.get(k)
-    
-    # Build a fixed set of keycodes for note scanning (pygame-only)
-    NOTE_KC = {
-        'a': pygame.K_a, 's': pygame.K_s, 'd': pygame.K_d, 'f': pygame.K_f, 'g': pygame.K_g,
-        'h': pygame.K_h, 'j': pygame.K_j, 'k': pygame.K_k, 'l': pygame.K_l, ';': pygame.K_SEMICOLON, "'": pygame.K_QUOTE,
-        'w': pygame.K_w, 'e': pygame.K_e, 'r': pygame.K_r, 'y': pygame.K_y, 'u': pygame.K_u,
-        'o': pygame.K_o, 'p': pygame.K_p, '[': pygame.K_LEFTBRACKET,
-    }
-    def _scan_notes(self):
-        # If window is not focused, flush and do nothing
-        if not pygame.key.get_focused():
-            self._flush_all_pressed()
-            self._last_down = set()
-            return
-        
-        keys = pygame.key.get_pressed()
-        current = set()
-        for ch, kc in self.NOTE_KC.items():
-            if keys[kc]:
-                current.add(ch)
-        
-        # New presses
-        for ch in current - self._last_down:
-            self.handle_note_on(ch)
-        # Releases
-        for ch in self._last_down - current:
-            self.handle_note_off(ch)
-        
-        self._last_down = current
+        self.min_base_midi = min(WHITE_MIDIS)
+        self.max_base_midi = max(WHITE_MIDIS)
+
+    def apply_keymap(self, kc_to_midi: Dict[int, int]):
+        # Set active mapping and update labels on keys
+        self.kc_to_midi = dict(kc_to_midi)
+        # Invert: midi -> keycode (if multiple map to same midi, keep last)
+        midi_to_kc = {}
+        for kc, midi in self.kc_to_midi.items():
+            if midi in BASE_MIDIS:
+                midi_to_kc[midi] = kc
+        # Update key labels
+        for midi, key in self.midi_to_key.items():
+            kc = midi_to_kc.get(midi)
+            if kc is not None:
+                name = pygame.key.name(kc).upper()
+            else:
+                name = ''
+            key.kb = name
+
+    def _flush_all_pressed(self):
+        # Release any pressed keyboard notes (by keycode)
+        for kc in list(self.pressed_kc.keys()):
+            self.handle_note_off_kc(kc)
+        self.mouse_note_off_all()
 
     def _octave_limits(self):
         min_base = self.min_base_midi
@@ -968,6 +1040,7 @@ class PianoApp:
         max_up = (MAX_MIDI - max_base) // 12
         max_down = (min_base - MIN_MIDI) // 12
         return -max_down, max_up
+
     def change_octave(self, delta):
         min_shift, max_shift = self._octave_limits()
         new_shift = max(min_shift, min(max_shift, self.octave_shift + delta))
@@ -979,6 +1052,7 @@ class PianoApp:
                 self.set_status(f"Max octave reached: +{max_shift}", RED, 900)
             else:
                 self.set_status(f"Min octave reached: {min_shift}", RED, 900)
+
     def draw_ui(self):
         self.screen.fill((15, 15, 18))
         for i in range(140):
@@ -997,14 +1071,11 @@ class PianoApp:
             bg_rect.inflate_ip(30, 10)
             pygame.draw.rect(self.screen, (25, 25, 28), bg_rect, border_radius=8)
             self.screen.blit(txt, txt.get_rect(center=(WIDTH // 2, 25)))
-        if self.recorder.is_recording:
-            rec_text = "● RECORDING"
-        else:
-            rec_text = "READY"
+        rec_text = "● RECORDING" if self.recorder.is_recording else "READY"
         info = f"{rec_text}  |  Vol {int(self.master_volume*100)}%  |  Octave {self.octave_shift:+d}"
         txt = self.small_font.render(info, True, (200, 200, 205))
         self.screen.blit(txt, txt.get_rect(center=(WIDTH // 2, 70)))
-        hint = "1: Record  |  2: Save WAV  |  3: MP3  |  4: Preview  |  Tab: Sustain  |  Shift/Space: Octave"
+        hint = "1: Record  |  2: Save WAV  |  3: MP3  |  4: Preview  |  F11: Reset map  |  F12: Learn map"
         txt = self.small_font.render(hint, True, (120, 120, 125))
         self.screen.blit(txt, txt.get_rect(center=(WIDTH // 2, HEIGHT - 25)))
         if self.cache_ready < self.cache_total:
@@ -1016,26 +1087,43 @@ class PianoApp:
             progress = f"Initializing sounds... {self.cache_ready}/{self.cache_total}"
             txt = self.small_font.render(progress, True, (100, 180, 255))
             self.screen.blit(txt, txt.get_rect(center=(WIDTH // 2, 100)))
-    def handle_note_on(self, kb_char):
-        if kb_char not in self.key_dict:
+
+        # Mapping overlay message
+        if self.mapping_mode:
+            midi = self._map_sequence[self._map_index] if self._map_index < len(self._map_sequence) else None
+            prompt = f"Mapping mode: Press a key for {midi_to_name(midi)}" if midi else "Mapping complete"
+            prompt += "  (Esc=cancel, Backspace=skip, Enter=finish)"
+            txt = pygame.font.Font(None, 30).render(prompt, True, BLUE)
+            self.screen.blit(txt, txt.get_rect(center=(WIDTH // 2, 120)))
+
+    # ----- Note handling by keycode -----
+    def handle_note_on_kc(self, kc: int):
+        midi = self.kc_to_midi.get(kc)
+        if midi is None:
             return
-        if kb_char in self.pressed_keys:
+        if kc in self.pressed_kc:
             return
-        key = self.key_dict[kb_char]
-        midi_used = key.base_midi + 12 * self.octave_shift
+        key = self.midi_to_key.get(midi)
+        if not key:
+            return
+        midi_used = midi + 12 * self.octave_shift
         if MIN_MIDI <= midi_used <= MAX_MIDI:
-            self.pressed_keys[kb_char] = (key, midi_used)
+            self.pressed_kc[kc] = (key, midi_used)
             key.play(midi_used, volume=self.master_volume)
             self.recorder.note_on(midi_used)
         else:
             self.set_status(f"{midi_to_name(midi_used)} out of range.", RED, 1200)
-    def handle_note_off(self, kb_char):
-        if kb_char not in self.pressed_keys:
+
+    def handle_note_off_kc(self, kc: int):
+        item = self.pressed_kc.pop(kc, None)
+        if not item:
             return
-        key, midi_used = self.pressed_keys.pop(kb_char)
+        key, midi_used = item
         self.recorder.note_off(midi_used)
         if not self.sustain:
             key.release(fade_ms=DEFAULT_FADE_OUT_MS)
+
+    # ----- Mouse note helpers -----
     def mouse_note_on(self, key: PianoKey):
         if key in self.mouse_notes_active:
             return
@@ -1046,34 +1134,71 @@ class PianoApp:
             self.recorder.note_on(midi_used)
         else:
             self.set_status(f"{midi_to_name(midi_used)} out of range.", RED, 1200)
+
     def mouse_note_off_all(self):
         for key, midi_used in list(self.mouse_notes_active.items()):
             self.recorder.note_off(midi_used)
             if not self.sustain:
                 key.release(fade_ms=DEFAULT_FADE_OUT_MS)
         self.mouse_notes_active.clear()
+
     def sustain_on(self):
         if not self.sustain:
             self.sustain = True
             self.recorder.sustain_on()
             self.set_status("Sustain ON", BLUE, 800)
+
     def sustain_off(self):
         if self.sustain:
             self.sustain = False
             self.recorder.sustain_off()
-            held_keys = set(k for (k, _m) in self.pressed_keys.values()).union(set(self.mouse_notes_active.keys()))
+            held_keys = set(k for (k, _m) in self.pressed_kc.values()).union(set(self.mouse_notes_active.keys()))
             for key in self.keys:
                 if key not in held_keys:
                     key.release(fade_ms=DEFAULT_FADE_OUT_MS)
             self.set_status("Sustain OFF", BLUE, 800)
-    def _flush_all_pressed(self):
-        # Safety: release everything on focus loss to prevent stuck notes
-        for ch in list(self.pressed_keys.keys()):
-            self.handle_note_off(ch)
-        self.mouse_note_off_all()
+
+    # ----- Mapping mode -----
+    def start_mapping_mode(self):
+        self.mapping_mode = True
+        self._map_index = 0
+        self._temp_map = {}
+        self.set_status("Mapping mode started. Assign keys (F12).", BLUE, 2500)
+
+    def cancel_mapping_mode(self):
+        self.mapping_mode = False
+        self._temp_map.clear()
+        self.set_status("Mapping canceled.", RED, 2000)
+
+    def finish_mapping_mode(self):
+        self.mapping_mode = False
+        if self._temp_map:
+            self.apply_keymap(self._temp_map)
+            save_user_keymap(self._temp_map)
+            self.set_status("Custom keymap saved.", GREEN, 2500)
+        else:
+            self.set_status("No keys mapped.", DARK_GRAY, 1800)
+
+    def handle_mapping_key(self, kc: int):
+        # Reserved keys cannot be used for notes
+        if kc in self.RESERVED_KC:
+            self.set_status("That key is reserved. Choose a different key.", RED, 1400)
+            return
+        if self._map_index >= len(self._map_sequence):
+            self.finish_mapping_mode()
+            return
+        midi = self._map_sequence[self._map_index]
+        # Ensure unique keycode: if already assigned, we reassign
+        # Also prevent multiple kc -> same midi by letting latest take precedence
+        self._temp_map = {k: v for k, v in self._temp_map.items() if v != midi and k != kc}
+        self._temp_map[kc] = midi
+        self._map_index += 1
+        if self._map_index >= len(self._map_sequence):
+            self.finish_mapping_mode()
+
     def run(self):
         running = True
-        self.set_status("Ready. Play keys or click the keyboard!", DARK_GRAY, 2000)
+        self.set_status("Ready. F12 to learn a custom keymap. F11 resets to default.", DARK_GRAY, 3000)
         while running:
             self.recorder.maybe_begin_after_count_in()
             for event in pygame.event.get():
@@ -1083,15 +1208,34 @@ class PianoApp:
                 if event.type == METRO_EVENT:
                     self.metronome.click()
                     continue
-                # Focus-loss safety flush (covers both new and old pygame event models)
+
+                # Focus loss -> flush notes so nothing sticks
                 if event.type == getattr(pygame, 'WINDOWFOCUSLOST', None) or (
                     event.type == pygame.ACTIVEEVENT and getattr(event, 'state', 0) & 2 and getattr(event, 'gain', 1) == 0
                 ):
                     self._flush_all_pressed()
                     continue
+
                 # --- Keyboard Input ---
                 if event.type == pygame.KEYDOWN:
-                    # App controls (number row)
+                    # Mapping mode consumes keys first
+                    if self.mapping_mode:
+                        if event.key == pygame.K_ESCAPE:
+                            self.cancel_mapping_mode()
+                            continue
+                        if event.key == pygame.K_RETURN:
+                            self.finish_mapping_mode()
+                            continue
+                        if event.key == pygame.K_BACKSPACE:
+                            # Skip current note
+                            self._map_index = min(self._map_index + 1, len(self._map_sequence))
+                            if self._map_index >= len(self._map_sequence):
+                                self.finish_mapping_mode()
+                            continue
+                        self.handle_mapping_key(event.key)
+                        continue
+
+                    # === NUMBER ROW CONTROLS ===
                     if event.key == pygame.K_1:
                         if self.recorder.is_recording or self.recorder._count_in_until:
                             self.recorder.stop_and_render_threaded()
@@ -1133,7 +1277,8 @@ class PianoApp:
                         self.metronome.toggle()
                         self.set_status(f"Metronome {'ON' if self.metronome.enabled else 'OFF'} ({self.metronome.bpm} BPM)", DARK_GRAY, 1400)
                         continue
-                    # Function keys
+
+                    # === FUNCTION KEY CONTROLS ===
                     if event.key == pygame.K_F1:
                         self.metronome.set_bpm(self.metronome.bpm - 5)
                         self.set_status(f"BPM: {self.metronome.bpm}", DARK_GRAY, 900)
@@ -1171,6 +1316,15 @@ class PianoApp:
                     if event.key == pygame.K_F10:
                         self.change_octave(1)
                         continue
+                    if event.key == pygame.K_F11:
+                        self.apply_keymap(DEFAULT_KC_TO_MIDI.copy())
+                        save_user_keymap(DEFAULT_KC_TO_MIDI)
+                        self.set_status("Keymap reset to default.", BLUE, 2000)
+                        continue
+                    if event.key == pygame.K_F12:
+                        self.start_mapping_mode()
+                        continue
+
                     # Sustain / octave modifiers
                     if event.key == pygame.K_TAB:
                         self.sustain_on()
@@ -1184,9 +1338,17 @@ class PianoApp:
                     if event.key == pygame.K_ESCAPE:
                         running = False
                         continue
+
+                    # Notes via active keymap (pygame-only input path)
+                    self.handle_note_on_kc(event.key)
+                    continue
+
                 elif event.type == pygame.KEYUP:
                     if event.key == pygame.K_TAB:
                         self.sustain_off()
+                    else:
+                        self.handle_note_off_kc(event.key)
+
                 # --- Mouse Input ---
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     key = self.find_key_at(event.pos)
@@ -1198,11 +1360,21 @@ class PianoApp:
                         self.mouse_note_on(key)
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     self.mouse_note_off_all()
-            # Per-frame note scan (authoritative note state)
-            self._scan_notes()
+
             self.draw_ui()
             pygame.display.flip()
             self.clock.tick(60)
+
+    def find_key_at(self, pos):
+        # Prefer black keys when overlapping
+        for key in self.keys:
+            if key.is_black and key.rect.collidepoint(pos):
+                return key
+        for key in self.keys:
+            if not key.is_black and key.rect.collidepoint(pos):
+                return key
+        return None
+
 # -------------------------
 # Main
 # -------------------------
