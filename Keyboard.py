@@ -9,15 +9,12 @@ from functools import wraps
 import sys
 import re
 import shutil
-
 import numpy as np
 import pygame
 import soundfile as sf
-
 # Setup Logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pc_keyboard_piano")
-
 # Setup Profiler (Fix 5)
 def timed(threshold: float = 0.1):
     def deco(func):
@@ -31,7 +28,6 @@ def timed(threshold: float = 0.1):
             return out
         return wrapper
     return deco
-
 # Helper functions for environment variable validation (A2)
 def get_mixer_buffer() -> int:
     try:
@@ -44,7 +40,6 @@ def get_mixer_buffer() -> int:
     except ValueError:
         logger.warning("Invalid PIANO_MIXER_BUFFER value, using 64")
         return 64
-
 def get_mixer_freq() -> Optional[int]:
     freq_str = os.environ.get("PIANO_MIXER_FREQ")
     if not freq_str:
@@ -58,14 +53,12 @@ def get_mixer_freq() -> Optional[int]:
     except ValueError:
         logger.warning("Invalid PIANO_MIXER_FREQ value, ignoring")
         return None
-
 # Optional MP3 export dependency
 try:
     from pydub import AudioSegment
     PYDUB_AVAILABLE = True
 except Exception:
     PYDUB_AVAILABLE = False
-
 # -------------------------
 # Audio/Display Settings
 # -------------------------
@@ -74,7 +67,6 @@ BIT_DEPTH = -16      # 16-bit signed
 CHANNELS = 2
 MIXER_BUFFER = get_mixer_buffer()
 PREF_FREQ = get_mixer_freq()
-
 # CRITICAL: Set audio driver BEFORE any pygame init (Fix 1)
 if 'SDL_AUDIODRIVER' not in os.environ:
     if os.name == 'nt':
@@ -84,11 +76,9 @@ if 'SDL_AUDIODRIVER' not in os.environ:
     else:
         # Linux: prefer PulseAudio, fallback to ALSA
         os.environ['SDL_AUDIODRIVER'] = 'pulseaudio'
-
 def init_mixer() -> Tuple[bool, Optional[int], Optional[int]]:
     # Try preferred freq only (low-latency focus)
     freqs = [PREF_FREQ] if PREF_FREQ is not None else [44100]
-
     for freq in freqs:
         if freq is None:
             continue
@@ -118,10 +108,8 @@ def init_mixer() -> Tuple[bool, Optional[int], Optional[int]]:
             except pygame.error as e:
                 logger.warning(f"Mixer init failed at {freq}/{buf}: {e}")
                 continue
-
     logger.error("Audio mixer failed to initialize. Sound is disabled.")
     return False, None, None
-
 class AudioConfig:
     def __init__(self):
         self.ok: bool = False
@@ -130,7 +118,6 @@ class AudioConfig:
     
     def init(self):
         self.ok, self.freq, self.buffer = init_mixer()
-
 pygame.init()
 # Force mixer to be uninitialized before we configure it (Fix 1)
 try:
@@ -140,16 +127,13 @@ except Exception:
     pass
 AUDIO = AudioConfig()
 AUDIO.init()
-
 if not AUDIO.ok:
     print("Audio mixer failed to initialize. Sound is disabled.")
-
 # -------------------------
 # UI Constants
 # -------------------------
 # UI Constants - Modern, Clean Design
 WIDTH, HEIGHT = 1400, 700  # Taller for better proportions
-
 # Modern color palette
 BACKGROUND = (18, 18, 18)  # Dark background
 WHITE = (250, 250, 250)
@@ -161,7 +145,6 @@ RED = (255, 70, 70)
 GREEN = (50, 205, 50)
 BLUE = (70, 130, 255)
 INFO_COLOR = (160, 160, 160)
-
 # -------------------------
 # Functional Constants & Safety Limits
 # -------------------------
@@ -173,57 +156,44 @@ MAX_TAKES = 64
 MAX_RECORD_SECONDS = 900
 MAX_RENDER_SECONDS = 600
 MAX_TOTAL_SAMPLES = MAX_RENDER_SECONDS * SAMPLE_RATE
-
 # Path safety setup
 RECORDINGS_DIR = Path("recordings").resolve()
 RECORDINGS_DIR.mkdir(exist_ok=True)
-
 SAFE_FILENAME_RE = re.compile(r'^[\w\-. ]{1,128}$')  # length cap to avoid weird cases
 RESERVED_WIN = {'con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'lpt1', 'lpt2', 'lpt3'}
-
 def safepath(filename: str) -> Path: # Patch 3: Harden filename validation
     """Return a safe path inside recordings/, raising on traversal or invalid names."""
     # Strip any path components to a bare filename
     filename = Path(filename).name
-
     # Validate characters
     if not SAFE_FILENAME_RE.match(filename):
         raise ValueError(f"Invalid characters in filename: {filename}")
-
     # Block hidden files and reserved names
     if filename.startswith('.'):
         raise ValueError("Hidden filenames are not allowed")
     if os.name == 'nt' and filename.split('.')[0].lower() in RESERVED_WIN:
         raise ValueError("Reserved filename on Windows")
-
     path = (RECORDINGS_DIR / filename).resolve()
     path.relative_to(RECORDINGS_DIR)  # raises ValueError if outside
     return path
-
 # Type Aliases (B1)
 EventRecord = Tuple[float, str, Optional[int]]   # (time_sec, event_type, midi)
 NoteRecord = Tuple[int, float, float]            # (midi, start_sec, end_sec)
-
-
 # -------------------------
 # Musical Helpers
 # -------------------------
 A4_FREQ = 440.0
 A4_MIDI = 69
-
 def midi_to_freq(midi_note: int) -> float:
     return A4_FREQ * (2 ** ((midi_note - A4_MIDI) / 12))
-
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 def midi_to_name(midi_note: int) -> str:
     octave = (midi_note // 12) - 1
     name = NOTE_NAMES[midi_note % 12]
     return f"{name}{octave}"
-
 # Safe playable MIDI range (C1..C8)
 MIN_MIDI = 24
 MAX_MIDI = 108
-
 # -------------------------
 # Key Mapping (2 octaves C4..F5, base layout; we support octave shift)
 # -------------------------
@@ -255,7 +225,6 @@ KEY_TO_MIDI = {
     '[': 70,   # A#4
 }
 BASE_MIDIS = sorted(set(KEY_TO_MIDI.values()))
-
 # -------------------------
 # Synthesizer
 # -------------------------
@@ -270,7 +239,6 @@ class Synth:
         self.realtime_seconds = 6.0
         self.realtime_release = 0.8  # release tail for cached playback
         self.cache = {}              # midi -> pygame Sound
-
     def _harmonic_series(self, freq, t):
         # Enhanced, warm-bright piano-like tone with mild inharmonicity
         partials = [
@@ -282,24 +250,20 @@ class Synth:
         for mult, amp in partials:
             wave += (amp * np.sin(2 * np.pi * freq * mult * t)).astype(np.float32)
         return wave
-
     def _adsr_envelope(self, total_dur, sustain_level=0.65, attack=0.008, decay=0.18, release=0.35):
         sr = self.sample_rate
         N = int(total_dur * sr)
         env = np.zeros(N, dtype=np.float32)
-
         aN = max(1, int(attack * sr))
         dN = max(1, int(decay * sr))
         rN = max(1, int(release * sr))
         sN = max(0, N - (aN + dN + rN))
-
         env[:aN] = np.linspace(0.0, 1.0, aN, endpoint=False, dtype=np.float32)
         env[aN:aN + dN] = np.linspace(1.0, sustain_level, dN, endpoint=False, dtype=np.float32)
         env[aN + dN:aN + dN + sN] = sustain_level
         start = aN + dN + sN
         env[start:start + rN] = np.linspace(sustain_level, 0.0, rN, endpoint=True, dtype=np.float32)
         return env
-
     def render_note(self, freq, duration_sec, volume=DEFAULT_NOTE_VOLUME, release=0.35):
         # Offline mono rendering with exact duration
         total_dur = max(0.02, duration_sec + release)
@@ -309,7 +273,6 @@ class Synth:
         env = self._adsr_envelope(total_dur, sustain_level=0.65, attack=0.008, decay=0.18, release=release)
         signal = np.tanh(wave * env * body_decay * 1.2) * volume
         return signal.astype(np.float32)
-
     def get_realtime_sound(self, midi_note, volume=DEFAULT_NOTE_VOLUME): # Nuclear Option Fix (4)
         if midi_note not in self.cache:
             if not self.audio_config.ok or midi_note < MIN_MIDI or midi_note > MAX_MIDI:
@@ -337,7 +300,6 @@ class Synth:
                 self.cache[midi_note] = None
         
         return self.cache.get(midi_note, None)
-
     def clear_cache(self): # Patch 2
         """Release all cached sounds."""
         try:
@@ -349,13 +311,11 @@ class Synth:
                         pass
         finally:
             self.cache.clear()
-
     def __del__(self): # Patch 2
         try:
             self.clear_cache()
         except Exception:
             pass
-
 # -------------------------
 # Modular Audio Processor (Reverb & Stereoization)
 # -------------------------
@@ -369,35 +329,29 @@ def apply_reverb_stereo(mono: np.ndarray, sr: int, wet: float) -> np.ndarray:
         return np.zeros((0, 2), dtype=np.float32)
     if wet <= 1e-6:
         return np.column_stack((mono, mono)).astype(np.float32)
-
     # Multi-tap decorrelated delay
     taps_ms_L = [18, 43, 71, 97, 131, 173, 211, 263, 311]
     taps_ms_R = [24, 39, 68, 103, 149, 189, 233, 281, 327]
     gains = np.array([0.50, 0.40, 0.34, 0.28, 0.23, 0.19, 0.16, 0.13, 0.11], dtype=np.float32)
-
     tail_samples = int(sr * 0.35)
     out_len = len(mono) + tail_samples
     outL = np.zeros(out_len, dtype=np.float32)
     outR = np.zeros(out_len, dtype=np.float32)
-
     for d_ms, g in zip(taps_ms_L, gains):
         d = int(sr * d_ms / 1000.0)
         outL[d:d+len(mono)] += mono * g
     for d_ms, g in zip(taps_ms_R, gains):
         d = int(sr * d_ms / 1000.0)
         outR[d:d+len(mono)] += mono * g
-
     # Normalize wet tail
     peak_wet = max(np.max(np.abs(outL)), np.max(np.abs(outR)), 1e-6)
     outL = outL / peak_wet * 0.7
     outR = outR / peak_wet * 0.7
-
     # Prepare dry
     dry = np.column_stack((mono, mono)).astype(np.float32)
     if out_len > len(mono):
         pad = out_len - len(mono)
         dry = np.pad(dry, ((0, pad), (0, 0)), mode='constant')
-
     # Mix dry and wet signals (Patched E1: Avoids temporary arrays using numpy's 'out' parameter)
     stereo = np.empty((out_len, 2), dtype=np.float32)
     # Left
@@ -406,19 +360,15 @@ def apply_reverb_stereo(mono: np.ndarray, sr: int, wet: float) -> np.ndarray:
     # Right
     np.multiply((1.0 - wet), dry[:out_len, 1], out=stereo[:, 1])
     np.add(stereo[:, 1], wet * outR, out=stereo[:, 1])
-
     # Safety normalization
     peak_final = max(np.max(np.abs(stereo)), 1e-6)
     if peak_final > 0.99:
         stereo = stereo / peak_final * 0.99
-
     return stereo.astype(np.float32)
-
 # -------------------------
 # Metronome (accent + sub click)
 # -------------------------
 METRO_EVENT = pygame.USEREVENT + 42
-
 class Metronome:
     def __init__(self, audio_config: AudioConfig, bpm=100):
         self.audio_config = audio_config
@@ -427,7 +377,6 @@ class Metronome:
         self.click_main, self.click_sub = self._make_clicks()
         self.beat_counter = 0
         self.beats_per_bar = 4
-
     def _make_clicks(self):
         if not self.audio_config.ok:
             return None, None
@@ -435,7 +384,6 @@ class Metronome:
         t = np.linspace(0, dur, int(SAMPLE_RATE * dur), endpoint=False, dtype=np.float32)
         main = np.sin(2 * np.pi * 3000.0 * t) * np.exp(-t * 40.0) * 0.8
         sub = np.sin(2 * np.pi * 1800.0 * t) * np.exp(-t * 35.0) * 0.6
-
         def mk(w):
             i16 = (np.clip(w, -1.0, 1.0) * 32767).astype(np.int16)
             stereo = np.column_stack((i16, i16))
@@ -443,32 +391,26 @@ class Metronome:
                 return pygame.sndarray.make_sound(stereo)
             except Exception:
                 return None
-
         return mk(main), mk(sub)
-
     def start(self):
         if not self.audio_config.ok:
             return
         self.enabled = True
         ms = max(50, int(60000 / max(1, self.bpm)))
         pygame.time.set_timer(METRO_EVENT, ms)
-
     def stop(self):
         self.enabled = False
         pygame.time.set_timer(METRO_EVENT, 0)
         self.beat_counter = 0
-
     def toggle(self):
         if self.enabled:
             self.stop()
         else:
             self.start()
-
     def set_bpm(self, bpm: int):
         self.bpm = int(max(30, min(300, bpm)))
         if self.enabled:
             self.start()
-
     def click(self):
         if not self.enabled:
             return
@@ -476,7 +418,6 @@ class Metronome:
         if snd:
             snd.play()
         self.beat_counter += 1
-
 # -------------------------
 # Piano Key UI + Playback
 # -------------------------
@@ -489,7 +430,6 @@ class PianoKey:
         self.is_pressed = False
         self.synth = synth
         self.channels = []  # active pygame channels for overlapping samples
-
     def play(self, midi, volume=1.0):
         # Prune inactive channels (2.1)
         if pygame.mixer.get_init():
@@ -504,7 +444,6 @@ class PianoKey:
                 oldest.stop()
             except Exception:
                 pass
-
         sound = self.synth.get_realtime_sound(midi)
         if sound:
             ch = sound.play()
@@ -512,7 +451,6 @@ class PianoKey:
                 ch.set_volume(volume, volume)
                 self.channels.append(ch)
         self.is_pressed = True
-
     def release(self, fade_ms=15): # Fix 7: Use micro-fade
         # Micro-fade to avoid click
         if pygame.mixer.get_init():
@@ -524,7 +462,6 @@ class PianoKey:
                         pass
         self.channels = []
         self.is_pressed = False
-
     def draw(self, surface, font, note_font, octave_shift):
         name_midi = self.base_midi + 12 * octave_shift
         name = midi_to_name(name_midi)
@@ -575,7 +512,6 @@ class PianoKey:
         # Note name smaller and more subtle
         nlabel = note_font.render(name, True, text_color)
         surface.blit(nlabel, nlabel.get_rect(center=(self.rect.centerx, self.rect.bottom - 15)))
-
 # -------------------------
 # Recorder (Threaded rendering + saving + preview + takes/overdub)
 # -------------------------
@@ -586,46 +522,38 @@ class Recorder:
         self.app = app
         # Storing set_status callback for cleaner decoupling (Patch 7)
         self.set_status = getattr(app, 'set_status', lambda *args, **kwargs: None)
-
         # State protected by lock (D2)
         self._lock = threading.Lock()      # Protects: rendered_audio, takes, is_rendering, preview handle
         self.is_rendering = False # Managed by atomic helpers (1.1)
         self.rendered_audio = None  # mono float32
         self._preview_sound = None
         # self._saving removed (5)
-
         self._render_cancel_event = threading.Event()
         self._save_lock = threading.Lock() # Prevents concurrent file writes (WAV/MP3)
-
         self.overdub_mode = False
         self.count_in_bars = 0
         self._count_in_until = 0
         self.takes = []  # list of takes
         self.reset_active()
-
     # Atomic setters/getters for rendering state (1.1)
     def _set_rendering(self, value: bool) -> None:
         with self._lock:
             self.is_rendering = value
-
     def _is_rendering(self) -> bool:
         with self._lock:
             return self.is_rendering
-
     def reset_active(self):
         self.is_recording = False
         self.start_ms = 0
         self.events = []
         self.current_pressed = set()
         self.sustain = False
-
     def reset_all(self):
         self.reset_active()
         with self._lock:
             self.takes = []
             self.rendered_audio = None
             self._preview_sound = None
-
     def toggle_overdub(self):
         self.overdub_mode = not self.overdub_mode
         self.set_status(
@@ -633,7 +561,6 @@ class Recorder:
             BLUE if self.overdub_mode else DARK_GRAY,
             1400
         )
-
     def undo_last_take(self): # Patched A3
         removed = False
         with self._lock:
@@ -647,11 +574,9 @@ class Recorder:
             self.set_status("Last take removed.", DARK_GRAY, 1200)
         else:
             self.set_status("No takes to undo.", DARK_GRAY, 1200)
-
     def cycle_count_in(self):
         self.count_in_bars = (self.count_in_bars + 1) % 3
         self.set_status(f"Count-in bars: {self.count_in_bars}", DARK_GRAY, 1200)
-
     def start(self):
         # If overdub is disabled, start a new set of takes
         if not self.overdub_mode:
@@ -659,9 +584,7 @@ class Recorder:
                 self.takes = []
                 self.rendered_audio = None
                 self._preview_sound = None
-
         self.reset_active()
-
         # Optional count-in if metronome is enabled
         if self.app.metronome.enabled and self.count_in_bars > 0:
             beat_ms = max(50, int(60000 / max(1, self.app.metronome.bpm)))
@@ -673,54 +596,43 @@ class Recorder:
             self.is_recording = True
             self.start_ms = pygame.time.get_ticks()
             self.set_status("🔴 Recording...", RED, 1200)
-
     def maybe_begin_after_count_in(self):
         if self.start_ms == 0 and self._count_in_until and pygame.time.get_ticks() >= self._count_in_until:
             self.is_recording = True
             self.start_ms = pygame.time.get_ticks()
             self._count_in_until = 0
             self.set_status("🔴 Recording...", RED, 1200)
-
     def time_sec(self):
         if self.start_ms == 0:
             return 0.0
         return (pygame.time.get_ticks() - self.start_ms) / 1000.0
-
     def _record_time_ok(self) -> bool:
         return self.time_sec() <= MAX_RECORD_SECONDS
-
     def note_on(self, midi_note): # Fixed: Removed redundant maybe_begin call
         if not self.is_recording or not (MIN_MIDI <= midi_note <= MAX_MIDI):
             return
-
         if not self._record_time_ok():
             self.set_status("Max recording length reached. Stopping...", RED, 2500)
             self.stop_and_render_threaded()
             return
-
         self.events.append((self.time_sec(), 'on', midi_note))
         self.current_pressed.add(midi_note)
-
     def note_off(self, midi_note): # Fixed: Removed redundant maybe_begin call
         if not self.is_recording or not (MIN_MIDI <= midi_note <= MAX_MIDI):
             return
-
         if not self._record_time_ok():
             return
             
         self.events.append((self.time_sec(), 'off', midi_note))
         self.current_pressed.discard(midi_note)
-
     def sustain_on(self): # Fixed: Removed redundant maybe_begin call
         if self.is_recording and self._record_time_ok():
             self.sustain = True
             self.events.append((self.time_sec(), 'sus_on', None))
-
     def sustain_off(self): # Fixed: Removed redundant maybe_begin call
         if self.is_recording and self._record_time_ok():
             self.sustain = False
             self.events.append((self.time_sec(), 'sus_off', None))
-
     def stop_and_render_threaded(self): # Patch 6: Atomic flag setting
         # If still counting-in, cancel
         if self._count_in_until and self.start_ms == 0:
@@ -733,7 +645,6 @@ class Recorder:
         if not self.is_recording:
             self.set_status("Not recording.", DARK_GRAY, 1500)
             return
-
         # Close this take and store it
         self.is_recording = False
         take_events = list(self.events)
@@ -742,32 +653,25 @@ class Recorder:
             # enforce take limit
             if len(self.takes) > MAX_TAKES:
                 self.takes.pop(0)  # drop oldest
-
         # Render all takes together
         all_events = []
         for t in self.takes:
             all_events.extend(t)
-
         if not all_events:
             self.set_status("No events recorded.", DARK_GRAY, 2000)
             return
-
         self.set_status("⏳ Rendering audio in background...", BLUE, 99999)
         self._set_rendering(True)
         self._render_cancel_event.clear()
         threading.Thread(target=self._render_worker, args=(list(all_events),), daemon=True).start()
-
-
     def cancel_render(self):
         if self._is_rendering():
             self._render_cancel_event.set()
             self.set_status("Render cancel requested...", RED, 1500)
-
     def _process_events(self, events: List[EventRecord]) -> Tuple[List[NoteRecord], float]:
         """Processes raw events into finalized note (midi, start_time, end_time) tuples."""
         events.sort(key=lambda e: e[0])
         end_time = events[-1][0] if events else 0.0
-
         notes = []
         active_notes = {}
         pressed = set()
@@ -804,31 +708,24 @@ class Recorder:
                         else:
                             kept.append((st, sus_hold))
                     active_notes[midi] = kept
-
         # End any remaining notes
         for midi, lst in active_notes.items():
             for (st, _sus) in lst:
                 notes.append((midi, st, end_time))
-
         if not notes:
             raise ValueError("No notes to mix.")
-
         return notes, end_time
-
     @timed(0.05) # Profiling decorator (Fix 5)
     def _mix_notes(self, notes: List[NoteRecord]) -> np.ndarray:
         """Renders notes into a single mono numpy array, enforcing render limits."""
         if not notes:
             return np.zeros(0, dtype=np.float32)
-
         release_tail = 0.35
         
         last_end = max(end for (_m, _s, end) in notes)
         last_end = min(last_end + release_tail + 0.05, float(MAX_RENDER_SECONDS))
-
         total_samples = min(int(last_end * SAMPLE_RATE), MAX_TOTAL_SAMPLES)
         mix = np.zeros(total_samples, dtype=np.float32)
-
         for (midi, st, end) in notes:
             if self._render_cancel_event.is_set():
                 raise KeyboardInterrupt
@@ -847,24 +744,19 @@ class Recorder:
             seg_len = end_idx - start_idx
             if seg_len > 0:
                 mix[start_idx:end_idx] += mono[:seg_len]
-
         peak = np.max(np.abs(mix)) if len(mix) else 0.0
         if peak > 1e-6:
             mix = mix / peak * 0.92
-
         return mix
-
     def _render_worker(self, events: List[EventRecord]): # Patch 1: Exception-safe state change
         try:
             notes, _end_time = self._process_events(events)
             mix = self._mix_notes(notes)
-
             with self._lock:
                 # Defensive copy to avoid mutation races
                 self.rendered_audio = mix.copy()
                 self._preview_sound = None
                 self.set_status("✅ Rendering complete. Save (S/M) or Preview (P).", GREEN, 4000)
-
         except ValueError:
             with self._lock:
                 self.rendered_audio = None
@@ -884,15 +776,12 @@ class Recorder:
         finally:
             # Ensure rendering flag is always reset
             self._set_rendering(False)
-
-
     # ----- Atomic, thread-safe buffer access -----
     def _get_rendered_copy(self) -> Optional[np.ndarray]:
         with self._lock:
             if self.rendered_audio is None:
                 return None
             return self.rendered_audio.copy()
-
     def _get_rendered_readonly(self) -> Optional[np.ndarray]: # Patch 8
         with self._lock:
             if self.rendered_audio is None:
@@ -900,7 +789,6 @@ class Recorder:
             arr = self.rendered_audio
         # Return a view; do not mutate it anywhere
         return arr.view()
-
     # ----- Saving (threaded, modular processing) -----
     def _trigger_save_threaded(self, save_func, filename=None):
         if self._is_rendering():
@@ -912,7 +800,6 @@ class Recorder:
         if not ready:
             self.set_status("Nothing to save. Record and render first.", DARK_GRAY, 2500)
             return
-
         # prevent multiple simultaneous saves
         if not self._save_lock.acquire(blocking=False):
             self.set_status("Save already in progress...", BLUE, 1500)
@@ -926,12 +813,9 @@ class Recorder:
                 save_func(filename)
             finally:
                 self._save_lock.release()
-
         threading.Thread(target=_runner, daemon=True).start()
-
     def save_wav(self):
         self._trigger_save_threaded(self._write_wav_file)
-
     def _write_wav_file(self, filename=None): # Patch 4: Disk space check & error handling
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = filename or f"piano_recording_{timestamp}.wav"
@@ -942,7 +826,6 @@ class Recorder:
             if mono is None:
                 self.set_status("Nothing to save.", RED, 2500)
                 return None
-
             stereo = apply_reverb_stereo(
                 mono, SAMPLE_RATE,
                 self.app.reverb_wet if self.app.reverb_enabled else 0.0
@@ -974,13 +857,11 @@ class Recorder:
             logger.exception("Error saving WAV file")
             self.set_status(f"Error saving WAV: {e.__class__.__name__}", RED, 5000)
             return None
-
     def save_mp3(self):
         if not PYDUB_AVAILABLE:
             self.set_status("MP3 requires pydub + ffmpeg. Saving WAV instead.", RED, 3500)
             return self._trigger_save_threaded(self._write_wav_file)
         self._trigger_save_threaded(self._write_mp3_file)
-
     def _write_mp3_file(self, filename=None):
         tmp_name = "temp_render_for_mp3.wav"
         tmp_path = self._write_wav_file(filename=tmp_name)
@@ -1002,8 +883,6 @@ class Recorder:
                     os.remove(tmp_path)
             except Exception:
                 logger.warning(f"Could not delete temporary WAV: {tmp_path}")
-
-
     # ----- Preview (modular processing) -----
     def preview_rendered(self):
         if self._is_rendering():
@@ -1035,14 +914,12 @@ class Recorder:
         except Exception as e:
             logger.exception("Preview failed")
             self.set_status(f"Preview error: {e.__class__.__name__}", RED, 4000)
-
     def stop_preview(self):
         try:
             pygame.mixer.stop()
             self.set_status("Preview stopped.", DARK_GRAY, 1500)
         except Exception:
             pass
-
 # -------------------------
 # Piano Application
 # -------------------------
@@ -1058,7 +935,6 @@ class PianoApp:
         self.audio_config = audio_config # Patch 10
         self.synth = Synth(self.audio_config)
         self.recorder = Recorder(self.synth, self) # Recorder now pulls set_status from self
-
         self.keys = []
         self.key_dict = {}
         self.pressed_keys = {}
@@ -1082,7 +958,6 @@ class PianoApp:
             self.set_status("Loading sounds...", INFO_COLOR, 99999)
             self._warmup_cache_blocking()
             self.set_status("🎹 Ready to play!", GREEN, 2000)
-
         # FORCE all mixer channels to be ready (prevents first-note lag) (Fix 3)
         if self.audio_config.ok:
             for i in range(pygame.mixer.get_num_channels()):
@@ -1097,7 +972,6 @@ class PianoApp:
                         ch.stop()
                 except:
                     pass
-
     def _warmup_cache_blocking(self):
         """Blocking warmup - ensures sounds are ACTUALLY loaded before continuing"""
         if not self.audio_config.ok:
@@ -1129,10 +1003,8 @@ class PianoApp:
         # Step 3: Flush audio system
         pygame.mixer.stop()
         pygame.time.wait(50)
-
     def __enter__(self):
         return self
-
     def __exit__(self, exc_type, exc_val, exc_tb): # Patch 2: Add cache cleanup
         try:
             try:
@@ -1143,12 +1015,10 @@ class PianoApp:
         except Exception:
             pass
         return False
-
     def set_status(self, msg, color=DARK_GRAY, ms=2500):
         self.status_message = msg
         self.status_color = color
         self.status_until = pygame.time.get_ticks() + ms
-
     def _create_piano_keys(self):
         # Professional sizing for EXACTLY 11 white keys
         white_w = 90
@@ -1200,7 +1070,6 @@ class PianoApp:
         self.keys.sort(key=lambda k: (k.is_black, k.rect.x))
         self.min_base_midi = 53
         self.max_base_midi = 71
-
     def find_key_at(self, pos):
         # Prefer black keys when overlapping
         for key in self.keys:
@@ -1210,7 +1079,6 @@ class PianoApp:
             if not key.is_black and key.rect.collidepoint(pos):
                 return key
         return None
-
     def _keycode_to_char(self, k):
         code_map = {
             # White keys
@@ -1224,14 +1092,12 @@ class PianoApp:
             pygame.K_o:'o', pygame.K_p:'p', pygame.K_LEFTBRACKET:'[',
         }
         return code_map.get(k)
-
     def _octave_limits(self):
         min_base = self.min_base_midi
         max_base = self.max_base_midi
         max_up = (MAX_MIDI - max_base) // 12
         max_down = (min_base - MIN_MIDI) // 12
         return -max_down, max_up
-
     def change_octave(self, delta):
         min_shift, max_shift = self._octave_limits()
         new_shift = max(min_shift, min(max_shift, self.octave_shift + delta))
@@ -1243,7 +1109,6 @@ class PianoApp:
                 self.set_status(f"Max octave reached: +{max_shift}", RED, 900)
             else:
                 self.set_status(f"Min octave reached: {min_shift}", RED, 900)
-
     def draw_ui(self):
         # Modern gradient background
         self.screen.fill((15, 15, 18))
@@ -1296,7 +1161,6 @@ class PianoApp:
             
             fill = int(bar_w * (self.cache_ready / self.cache_total))
             fill = max(0, min(bar_w, fill)) # Clamping the fill (Fix 4)
-
             # Draw background box
             pygame.draw.rect(self.screen, DARK_GRAY, (bar_x, bar_y, bar_w, bar_h), 1)
             # Draw fill, ensuring width is not negative
@@ -1305,8 +1169,6 @@ class PianoApp:
             progress = f"Initializing sounds... {self.cache_ready}/{self.cache_total}"
             txt = self.small_font.render(progress, True, (100, 180, 255))
             self.screen.blit(txt, txt.get_rect(center=(WIDTH // 2, 100)))
-
-
     def handle_note_on(self, kb_char):
         if kb_char not in self.key_dict:
             return
@@ -1320,7 +1182,6 @@ class PianoApp:
             self.recorder.note_on(midi_used)
         else:
             self.set_status(f"{midi_to_name(midi_used)} out of range.", RED, 1200)
-
     def handle_note_off(self, kb_char):
         if kb_char not in self.pressed_keys:
             return
@@ -1328,7 +1189,6 @@ class PianoApp:
         self.recorder.note_off(midi_used)
         if not self.sustain:
             key.release(fade_ms=DEFAULT_FADE_OUT_MS)
-
     def mouse_note_on(self, key: PianoKey):
         if key in self.mouse_notes_active:
             return
@@ -1339,20 +1199,17 @@ class PianoApp:
             self.recorder.note_on(midi_used)
         else:
             self.set_status(f"{midi_to_name(midi_used)} out of range.", RED, 1200)
-
     def mouse_note_off_all(self):
         for key, midi_used in list(self.mouse_notes_active.items()):
             self.recorder.note_off(midi_used)
             if not self.sustain:
                 key.release(fade_ms=DEFAULT_FADE_OUT_MS)
         self.mouse_notes_active.clear()
-
     def sustain_on(self):
         if not self.sustain:
             self.sustain = True
             self.recorder.sustain_on()
             self.set_status("Sustain ON", BLUE, 800)
-
     def sustain_off(self):
         if self.sustain:
             self.sustain = False
@@ -1370,20 +1227,16 @@ class PianoApp:
         while running:
             # Ensure count-in can start recording even if no notes pressed
             self.recorder.maybe_begin_after_count_in()
-
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                     continue
-
                 if event.type == METRO_EVENT:
                     self.metronome.click()
                     continue
-
                 # --- Keyboard Input ---
                 if event.type == pygame.KEYDOWN:
                     mods = event.mod  # capture modifiers once
-
                     # === NUMBER ROW CONTROLS ===
                     if event.key == pygame.K_1:  # Record/Stop
                         if self.recorder.is_recording or self.recorder._count_in_until:
@@ -1480,131 +1333,32 @@ class PianoApp:
                         running = False
                         continue
                     
-                    
-                    # Note keys - EXPLICIT keycode handling (more reliable than unicode)
-                    note_key_pressed = False
-                    # Check white keys explicitly
-                    if event.key == pygame.K_a:
-                        self.handle_note_on('a')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_s:
-                        self.handle_note_on('s')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_d:
-                        self.handle_note_on('d')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_f:
-                        self.handle_note_on('f')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_g:
-                        self.handle_note_on('g')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_h:
-                        self.handle_note_on('h')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_j:
-                        self.handle_note_on('j')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_k:
-                        self.handle_note_on('k')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_l:
-                        self.handle_note_on('l')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_SEMICOLON:
-                        self.handle_note_on(';')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_QUOTE:
-                        self.handle_note_on("'")
-                        note_key_pressed = True
-                    # Black keys
-                    elif event.key == pygame.K_w:
-                        self.handle_note_on('w')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_e:
-                        self.handle_note_on('e')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_r:
-                        self.handle_note_on('r')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_y:
-                        self.handle_note_on('y')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_u:
-                        self.handle_note_on('u')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_o:
-                        self.handle_note_on('o')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_p:
-                        self.handle_note_on('p')
-                        note_key_pressed = True
-                    elif event.key == pygame.K_LEFTBRACKET:
-                        self.handle_note_on('[')
-                        note_key_pressed = True
-                    if note_key_pressed:
+                    # Note keys (use unified map to avoid any leftover function bindings)
+                    ch = self._keycode_to_char(event.key)
+                    if ch:
+                        self.handle_note_on(ch)
                         continue
-
                 elif event.type == pygame.KEYUP:
                     if event.key == pygame.K_TAB:
                         self.sustain_off()
-                    elif event.key == pygame.K_a:
-                        self.handle_note_off('a')
-                    elif event.key == pygame.K_s:
-                        self.handle_note_off('s')
-                    elif event.key == pygame.K_d:
-                        self.handle_note_off('d')
-                    elif event.key == pygame.K_f:
-                        self.handle_note_off('f')
-                    elif event.key == pygame.K_g:
-                        self.handle_note_off('g')
-                    elif event.key == pygame.K_h:
-                        self.handle_note_off('h')
-                    elif event.key == pygame.K_j:
-                        self.handle_note_off('j')
-                    elif event.key == pygame.K_k:
-                        self.handle_note_off('k')
-                    elif event.key == pygame.K_l:
-                        self.handle_note_off('l')
-                    elif event.key == pygame.K_SEMICOLON:
-                        self.handle_note_off(';')
-                    elif event.key == pygame.K_QUOTE:
-                        self.handle_note_off("'")
-                    elif event.key == pygame.K_w:
-                        self.handle_note_off('w')
-                    elif event.key == pygame.K_e:
-                        self.handle_note_off('e')
-                    elif event.key == pygame.K_r:
-                        self.handle_note_off('r')
-                    elif event.key == pygame.K_y:
-                        self.handle_note_off('y')
-                    elif event.key == pygame.K_u:
-                        self.handle_note_off('u')
-                    elif event.key == pygame.K_o:
-                        self.handle_note_off('o')
-                    elif event.key == pygame.K_p:
-                        self.handle_note_off('p')
-                    elif event.key == pygame.K_LEFTBRACKET:
-                        self.handle_note_off('[')
-
+                    else:
+                        ch = self._keycode_to_char(event.key)
+                        if ch:
+                            self.handle_note_off(ch)
                 # --- Mouse Input ---
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     key = self.find_key_at(event.pos)
                     if key:
                         self.mouse_note_on(key)
-
                 elif event.type == pygame.MOUSEMOTION and event.buttons[0]:
                     key = self.find_key_at(event.pos)
                     if key:
                         self.mouse_note_on(key)
-
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     self.mouse_note_off_all()
-
             self.draw_ui()
             pygame.display.flip()
             self.clock.tick(60)
-
 # -------------------------
 # Main
 # -------------------------
@@ -1613,7 +1367,6 @@ if __name__ == "__main__":
         global AUDIO
         
         # NOTE: SDL_AUDIODRIVER already set globally
-
         # Initialize Pygame and Mixer explicitly
         pygame.init()
         # Force mixer to be uninitialized before we configure it (safety)
@@ -1622,7 +1375,6 @@ if __name__ == "__main__":
                 pygame.mixer.quit()
         except Exception:
             pass
-
         audio_config = AudioConfig()
         audio_config.init()
         
@@ -1631,5 +1383,4 @@ if __name__ == "__main__":
         
         with PianoApp(audio_config) as app:
             app.run()
-
     main()
