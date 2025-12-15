@@ -12,6 +12,14 @@ import shutil
 import numpy as np
 import pygame
 import soundfile as sf
+import platform
+try:
+    import keyboard as kb  # low-level system hook
+    KEYBOARD_LIB_AVAILABLE = True
+except Exception:
+    KEYBOARD_LIB_AVAILABLE = False
+# Ask SDL to grab the keyboard (helps on some systems)
+os.environ.setdefault('SDL_HINT_GRAB_KEYBOARD', '1')
 # Setup Logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pc_keyboard_piano")
@@ -921,12 +929,75 @@ class Recorder:
         except Exception:
             pass
 # -------------------------
+# Modular Audio Processor (Reverb & Stereoization)
+# -------------------------
+class KeyboardBlocker:
+    """
+    Blocks common Windows/global shortcuts while the app is running.
+    Requires: pip install keyboard, run as Administrator on Windows.
+    """
+    def __init__(self):
+        self.installed = False
+        self.hotkey_handles = []
+        self.blocked_keys = set()
+    def start(self):
+        if self.installed or not KEYBOARD_LIB_AVAILABLE or platform.system() != 'Windows':
+            self.installed = (platform.system() == 'Windows')
+            return
+        try:
+            # Block the Windows keys entirely
+            kb.block_key('left windows')
+            kb.block_key('right windows')
+            self.blocked_keys.update({'left windows', 'right windows'})
+            # Block common system/global combos that can steal focus or open overlays
+            combos = [
+                # Task switching/Start/menu/desktop
+                'alt+tab', 'alt+esc', 'ctrl+esc', 'win+tab', 'win+d', 'win+m',
+                # Overlays / panels
+                'win+g', 'win+p', 'win+i', 'win+v', 'win+.', 'win+;',
+                # Language/IME toggles
+                'win+space', 'alt+shift', 'ctrl+shift',
+                # Misc window controls
+                'alt+space', 'alt+f4',
+                # Snap
+                'win+up', 'win+down', 'win+left', 'win+right',
+            ]
+            for combo in combos:
+                h = kb.add_hotkey(combo, lambda: None, suppress=True, trigger_on_release=False)
+                self.hotkey_handles.append(h)
+            self.installed = True
+        except Exception as e:
+            logging.warning("KeyboardBlocker failed to start: %s", e)
+            self.installed = False
+    def stop(self):
+        if not KEYBOARD_LIB_AVAILABLE:
+            return
+        try:
+            for h in self.hotkey_handles:
+                kb.remove_hotkey(h)
+            self.hotkey_handles.clear()
+            # Unblock Windows keys
+            if 'left windows' in self.blocked_keys:
+                kb.unblock_key('left windows')
+            if 'right windows' in self.blocked_keys:
+                kb.unblock_key('right windows')
+            self.blocked_keys.clear()
+            # Remove all hooks (safety)
+            kb.unhook_all()
+        except Exception:
+            pass
+        self.installed = False
+# -------------------------
 # Piano Application
 # -------------------------
 class PianoApp:
     def __init__(self, audio_config: AudioConfig): # Patch 10
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("PC Keyboard Piano | Grandmaster Build")
+        try:
+            pygame.event.set_grab(True)  # confines mouse; hints keyboard grab via SDL hint
+        except Exception:
+            pass
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 28)
         self.small_font = pygame.font.Font(None, 22)
@@ -937,6 +1008,8 @@ class PianoApp:
         self.recorder = Recorder(self.synth, self) # Recorder now pulls set_status from self
         self.keys = []
         self.key_dict = {}
+        self.key_blocker = KeyboardBlocker()
+        self.key_blocker.start()  # try to block system hotkeys now
         self.pressed_keys = {}
         self.mouse_notes_active = {}
         self.sustain = False
@@ -1009,6 +1082,10 @@ class PianoApp:
         try:
             try:
                 self.synth.clear_cache()
+            except Exception:
+                pass
+            try:
+                self.key_blocker.stop()
             except Exception:
                 pass
             pygame.quit()
@@ -1189,6 +1266,19 @@ class PianoApp:
         self.recorder.note_off(midi_used)
         if not self.sustain:
             key.release(fade_ms=DEFAULT_FADE_OUT_MS)
+    def toggle_global_key_block(self):
+        if platform.system() != 'Windows':
+            self.set_status("Global key block is only supported on Windows.", RED, 2500)
+            return
+        if not KEYBOARD_LIB_AVAILABLE:
+            self.set_status("Install: pip install keyboard (run app as Admin).", RED, 3000)
+            return
+        if getattr(self.key_blocker, 'installed', False):
+            self.key_blocker.stop()
+            self.set_status("System hotkeys unblocked.", DARK_GRAY, 1400)
+        else:
+            self.key_blocker.start()
+            self.set_status("System hotkeys blocked (Admin required).", BLUE, 1600)
     def mouse_note_on(self, key: PianoKey):
         if key in self.mouse_notes_active:
             return
@@ -1317,6 +1407,11 @@ class PianoApp:
                     if event.key == pygame.K_F10:  # Octave up
                         self.change_octave(1)
                         continue
+                    
+                    if event.key == pygame.K_F12:  # toggle global key block
+                        self.toggle_global_key_block()
+                        continue
+                        
                     # Keep space for sustain
                     if event.key == pygame.K_TAB:
                         self.sustain_on()
@@ -1333,6 +1428,11 @@ class PianoApp:
                         running = False
                         continue
                     
+                    mods = pygame.key.get_mods()
+                    if mods & (pygame.KMOD_CTRL | pygame.KMOD_ALT | pygame.KMOD_GUI | pygame.KMOD_MODE):
+                        # Skip note handling when system modifiers are held.
+                        continue
+                    
                     # Note keys (use unified map to avoid any leftover function bindings)
                     ch = self._keycode_to_char(event.key)
                     if ch:
@@ -1342,6 +1442,11 @@ class PianoApp:
                     if event.key == pygame.K_TAB:
                         self.sustain_off()
                     else:
+                        mods = pygame.key.get_mods()
+                        if mods & (pygame.KMOD_CTRL | pygame.KMOD_ALT | pygame.KMOD_GUI | pygame.KMOD_MODE):
+                            # Skip note handling when system modifiers are held.
+                            continue
+                            
                         ch = self._keycode_to_char(event.key)
                         if ch:
                             self.handle_note_off(ch)
