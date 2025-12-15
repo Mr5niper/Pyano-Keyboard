@@ -28,7 +28,7 @@ With the virtual environment active, install PyInstaller and all the libraries t
 
 ```sh
 # Install PyInstaller and other packages from your requirements file
-pip install requirements.exe
+pip install requirements.txt
 ```
 
 ### Step 3: Build the Executable from the `.spec` file
