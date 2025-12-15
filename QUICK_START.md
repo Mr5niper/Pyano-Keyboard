@@ -28,18 +28,17 @@ With the virtual environment active, install PyInstaller and all the libraries t
 
 ```sh
 # Install PyInstaller and other packages from your requirements file
-pip install pyinstaller pygame numpy soundfile pydub
+pip install requirements.exe
 ```
 
 ### Step 3: Build the Executable from the `.spec` file
 
 PyInstaller uses a `.spec` file to understand how to bundle your application. Since you already have this file, the process is straightforward.
 
-Make sure your `your_app_name.spec` file is in the root of your project directory. Run the following command:
+Make sure your `Keyboard.spec` file is in the root of your project directory. Run the following command:
 
 ```sh
-# Replace 'your_app_name.spec' with the actual name of your spec file
-pyinstaller your_app_name.spec
+pyinstaller Keyboard.spec
 ```
 
 PyInstaller will read the configuration from the spec file and begin the bundling process. You will see a lot of output in the console as it analyzes imports and packages the files.
