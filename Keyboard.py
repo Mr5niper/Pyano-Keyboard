@@ -20,6 +20,16 @@ except Exception:
     KEYBOARD_LIB_AVAILABLE = False
 # Ask SDL to grab the keyboard (helps on some systems)
 os.environ.setdefault('SDL_HINT_GRAB_KEYBOARD', '1')
+
+def _is_admin():
+    if platform.system() != 'Windows':
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
 # Setup Logger
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pc_keyboard_piano")
@@ -949,18 +959,21 @@ class KeyboardBlocker:
             kb.block_key('left windows')
             kb.block_key('right windows')
             self.blocked_keys.update({'left windows', 'right windows'})
-            # Block common system/global combos that can steal focus or open overlays
             combos = [
-                # Task switching/Start/menu/desktop
+                # Task switching / shell
                 'alt+tab', 'alt+esc', 'ctrl+esc', 'win+tab', 'win+d', 'win+m',
-                # Overlays / panels
-                'win+g', 'win+p', 'win+i', 'win+v', 'win+.', 'win+;',
+                # Overlays / panels / system UI
+                'win+g', 'win+p', 'win+i', 'win+v', 'win+h', 'win+c', 'win+.',
+                'win+;', 'win+shift+s', 'win+alt+r',
                 # Language/IME toggles
-                'win+space', 'alt+shift', 'ctrl+shift',
-                # Misc window controls
+                'win+space', 'alt+shift', 'ctrl+shift', 'ctrl+space',
+                # Window controls
                 'alt+space', 'alt+f4',
-                # Snap
+                # Snap and desktops
                 'win+up', 'win+down', 'win+left', 'win+right',
+                'win+ctrl+left', 'win+ctrl+right', 'win+ctrl+d', 'win+ctrl+f4',
+                # Screenshots
+                'print screen', 'win+print screen', 'alt+print screen',
             ]
             for combo in combos:
                 h = kb.add_hotkey(combo, lambda: None, suppress=True, trigger_on_release=False)
@@ -976,13 +989,11 @@ class KeyboardBlocker:
             for h in self.hotkey_handles:
                 kb.remove_hotkey(h)
             self.hotkey_handles.clear()
-            # Unblock Windows keys
             if 'left windows' in self.blocked_keys:
                 kb.unblock_key('left windows')
             if 'right windows' in self.blocked_keys:
                 kb.unblock_key('right windows')
             self.blocked_keys.clear()
-            # Remove all hooks (safety)
             kb.unhook_all()
         except Exception:
             pass
@@ -1010,6 +1021,13 @@ class PianoApp:
         self.key_dict = {}
         self.key_blocker = KeyboardBlocker()
         self.key_blocker.start()  # try to block system hotkeys now
+        if platform.system() == 'Windows':
+            if not KEYBOARD_LIB_AVAILABLE:
+                self.set_status("Install 'keyboard' and run as Admin. F12 toggles block.", RED, 4500)
+            elif not _is_admin():
+                self.set_status("Run as Administrator to block system hotkeys. F12 toggles.", RED, 4500)
+            elif not self.key_blocker.installed:
+                self.set_status("Hotkey blocker not active. Press F12 or run as Admin.", RED, 4500)
         self.pressed_keys = {}
         self.mouse_notes_active = {}
         self.sustain = False
