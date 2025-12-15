@@ -1,33 +1,39 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-from PyInstaller.utils.hooks import collect_all
-
-pygame_data = collect_all('pygame')
-
 a = Analysis(
-    ['Keyboard.py'],
+    ['keyboard.py'],
     pathex=[],
-    binaries=pygame_data[1],
-    datas=pygame_data[0],
-    hiddenimports=pygame_data[2],
+    binaries=[],
+    datas=[],
+    hiddenimports=[],
     hookspath=[],
+    hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
+    optimize=0,
 )
-
 pyz = PYZ(a.pure)
-
 exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
     a.zipfiles,
     a.datas,
-    name='Keyboard',
+    [],
+    # --- CHANGE THIS LINE ---
+    name='Pyano Keyboard',
     debug=False,
+    bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
-    onefile=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon='Icon.ico'
 )
