@@ -1080,7 +1080,7 @@ class PianoApp:
 
     def __init__(self, audio_config: AudioConfig):
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("PC Keyboard Piano | Grandmaster Build")
+        pygame.display.set_caption("Pyano Keyboard | Grandmaster Build")
 
         # --- Input isolation (prevents macros / OS key rules from interfering) ---
         # 1) Disable OS keyboard auto-repeat. Without this, the OS injects a stream
@@ -1446,7 +1446,7 @@ class PianoApp:
     def _write_wiz_report(self):
         import datetime
         lines = []
-        lines.append("PC Keyboard Piano - Key Diagnostic Report")
+        lines.append("Pyano Keyboard - Key Diagnostic Report")
         lines.append("Generated: " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         lines.append("")
         lines.append("ENVIRONMENT (the layers a keypress passes through)")

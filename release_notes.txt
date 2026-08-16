@@ -1,5 +1,5 @@
 ===============================================================================
-PC Keyboard Piano - Release Notes
+Pyano Keyboard - Release Notes
 ===============================================================================
 This file is ongoing. Newest entries at the top.
 
@@ -7,6 +7,20 @@ The history below (Dec 14-15, 2025) was reconstructed from the full commit
 diffs, not just the commit messages. Descriptions reflect what the code
 actually changed.
 
+
+-------------------------------------------------------------------------------
+2026-08-15 - Use the correct program name everywhere
+-------------------------------------------------------------------------------
+Renamed the leftover "PC Keyboard Piano" strings to "Pyano Keyboard" so the app,
+docs, and build all use the actual program name.
+
+  * Window title caption.
+  * Key diagnostic report header.
+  * README main heading.
+  * Release notes header.
+
+FILES CHANGED
+  Keyboard.py, README.md, release_notes.txt
 
 -------------------------------------------------------------------------------
 2026-08-15 - Correct held-key documentation
