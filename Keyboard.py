@@ -18,6 +18,216 @@ import soundfile as sf
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pc_keyboard_piano")
 
+
+# ============================================================================
+# Windows Raw Input keyboard reader
+# ----------------------------------------------------------------------------
+# Reads key up/down straight from the HID layer via the Windows Raw Input API,
+# bypassing SDL's keyboard message translation. This exists because on some
+# machines SDL/pygame drop simultaneous keydowns (certain key groups cap out at
+# a couple of concurrent keys). Raw Input reports each physical key
+# independently, so it can recover keys SDL never delivers.
+#
+# It maps Windows Virtual-Key codes to the same pygame key constants the rest of
+# the app uses, so raw input drives the existing note handlers unchanged.
+# On non-Windows, or if setup fails, RawKeyboard.available stays False and the
+# app uses the normal pygame path.
+# ============================================================================
+class RawKeyboard:
+    # Windows Virtual-Key -> pygame key constant, for the keys the app cares
+    # about (note keys + control keys used while playing).
+    _VK_TO_PYGAME = {}
+
+    def __init__(self):
+        self.available = False
+        self._events = []          # queued (is_down, pygame_key) for the app
+        self._down = set()         # VKs currently held (dedupe auto-repeat)
+        self._thread = None
+        self._stop = False
+        self._hwnd = None
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            self._setup_maps()
+            self._start()
+            self.available = True
+            logger.info("Raw Input keyboard active (bypassing SDL key path).")
+        except Exception as e:
+            logger.warning("Raw Input unavailable, using pygame keys: %s", e)
+            self.available = False
+
+    def _setup_maps(self):
+        # Build VK -> pygame constant map. Letters: VK 'A'..'Z' == ord('A')..,
+        # pygame K_a.. == ord('a').. so add 0x20. Punctuation uses OEM VKs.
+        m = {}
+        for c in range(ord('A'), ord('Z') + 1):
+            m[c] = c + 0x20  # pygame.K_a etc.
+        m.update({
+            0x30 + i: pygame.K_0 + i for i in range(10)  # 0-9 top row
+        })
+        m.update({
+            0xBA: pygame.K_SEMICOLON,     # ;
+            0xDE: pygame.K_QUOTE,         # '
+            0xDB: pygame.K_LEFTBRACKET,   # [
+            0xDD: pygame.K_RIGHTBRACKET,  # ]
+            0xBC: pygame.K_COMMA,
+            0xBE: pygame.K_PERIOD,
+            0xBF: pygame.K_SLASH,
+            0xDC: pygame.K_BACKSLASH,
+            0xC0: pygame.K_BACKQUOTE,
+            0xBD: pygame.K_MINUS,
+            0xBB: pygame.K_EQUALS,
+            0x20: pygame.K_SPACE,
+            0x09: pygame.K_TAB,
+            0x0D: pygame.K_RETURN,
+            0x1B: pygame.K_ESCAPE,
+            0x08: pygame.K_BACKSPACE,
+            0xA0: pygame.K_LSHIFT, 0xA1: pygame.K_RSHIFT, 0x10: pygame.K_LSHIFT,
+            0x70: pygame.K_F1, 0x71: pygame.K_F2, 0x72: pygame.K_F3,
+            0x73: pygame.K_F4, 0x74: pygame.K_F5, 0x75: pygame.K_F6,
+            0x76: pygame.K_F7, 0x77: pygame.K_F8, 0x78: pygame.K_F9,
+            0x79: pygame.K_F10, 0x7A: pygame.K_F11, 0x7B: pygame.K_F12,
+        })
+        self._VK_TO_PYGAME = m
+
+    def _start(self):
+        import ctypes
+        import ctypes.wintypes as wt
+        import threading
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        WM_INPUT = 0x00FF
+        WM_DESTROY = 0x0002
+        RID_INPUT = 0x10000003
+        RIM_TYPEKEYBOARD = 1
+        RIDEV_INPUTSINK = 0x00000100
+        RI_KEY_BREAK = 0x01
+        HWND_MESSAGE = wt.HWND(-3)
+
+        class RAWINPUTDEVICE(ctypes.Structure):
+            _fields_ = [("usUsagePage", wt.USHORT), ("usUsage", wt.USHORT),
+                        ("dwFlags", wt.DWORD), ("hwndTarget", wt.HWND)]
+
+        class RAWINPUTHEADER(ctypes.Structure):
+            _fields_ = [("dwType", wt.DWORD), ("dwSize", wt.DWORD),
+                        ("hDevice", wt.HANDLE), ("wParam", wt.WPARAM)]
+
+        class RAWKEYBOARD(ctypes.Structure):
+            _fields_ = [("MakeCode", wt.USHORT), ("Flags", wt.USHORT),
+                        ("Reserved", wt.USHORT), ("VKey", wt.USHORT),
+                        ("Message", wt.UINT), ("ExtraInformation", wt.ULONG)]
+
+        class RAWINPUT(ctypes.Structure):
+            _fields_ = [("header", RAWINPUTHEADER), ("keyboard", RAWKEYBOARD)]
+
+        WNDPROCTYPE = ctypes.WINFUNCTYPE(ctypes.c_long, wt.HWND, wt.UINT,
+                                         wt.WPARAM, wt.LPARAM)
+
+        class WNDCLASS(ctypes.Structure):
+            _fields_ = [("style", wt.UINT), ("lpfnWndProc", WNDPROCTYPE),
+                        ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+                        ("hInstance", wt.HINSTANCE), ("hIcon", wt.HANDLE),
+                        ("hCursor", wt.HANDLE), ("hbrBackground", wt.HANDLE),
+                        ("lpszMenuName", wt.LPCWSTR), ("lpszClassName", wt.LPCWSTR)]
+
+        def handle_input(lparam):
+            size = wt.UINT(0)
+            user32.GetRawInputData(wt.HANDLE(lparam), RID_INPUT, None,
+                                   ctypes.byref(size),
+                                   ctypes.sizeof(RAWINPUTHEADER))
+            if size.value == 0:
+                return
+            buf = ctypes.create_string_buffer(size.value)
+            if user32.GetRawInputData(wt.HANDLE(lparam), RID_INPUT, buf,
+                                      ctypes.byref(size),
+                                      ctypes.sizeof(RAWINPUTHEADER)) != size.value:
+                return
+            ri = ctypes.cast(buf, ctypes.POINTER(RAWINPUT)).contents
+            if ri.header.dwType != RIM_TYPEKEYBOARD:
+                return
+            vk = ri.keyboard.VKey
+            if vk in (0, 0xFF):
+                return
+            is_down = (ri.keyboard.Flags & RI_KEY_BREAK) == 0
+            pk = self._VK_TO_PYGAME.get(vk)
+            if pk is None:
+                return
+            if is_down:
+                if vk in self._down:
+                    return  # ignore hardware auto-repeat
+                self._down.add(vk)
+            else:
+                self._down.discard(vk)
+            self._events.append((is_down, pk))
+
+        def wnd_proc(hwnd, msg, wparam, lparam):
+            if msg == WM_INPUT:
+                try:
+                    handle_input(lparam)
+                except Exception:
+                    pass
+                return 0
+            if msg == WM_DESTROY:
+                user32.PostQuitMessage(0)
+                return 0
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        self._wndproc_ref = WNDPROCTYPE(wnd_proc)  # keep ref alive
+
+        def run():
+            hInstance = kernel32.GetModuleHandleW(None)
+            cls = WNDCLASS()
+            cls.lpfnWndProc = self._wndproc_ref
+            cls.hInstance = hInstance
+            cls.lpszClassName = "PyanoRawInput"
+            user32.RegisterClassW(ctypes.byref(cls))
+            hwnd = user32.CreateWindowExW(0, "PyanoRawInput", "PyanoRawInput",
+                                          0, 0, 0, 0, 0, HWND_MESSAGE, None,
+                                          hInstance, None)
+            self._hwnd = hwnd
+            rid = RAWINPUTDEVICE()
+            rid.usUsagePage = 0x01
+            rid.usUsage = 0x06
+            rid.dwFlags = RIDEV_INPUTSINK
+            rid.hwndTarget = hwnd
+            user32.RegisterRawInputDevices(ctypes.byref(rid), 1,
+                                           ctypes.sizeof(RAWINPUTDEVICE))
+            msg = wt.MSG()
+            while not self._stop and user32.GetMessageW(ctypes.byref(msg),
+                                                        None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+        self._user32 = user32
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+        # Give the message loop a moment to register.
+        time.sleep(0.05)
+
+    def poll(self):
+        # Return and clear queued (is_down, pygame_key) events.
+        evs = self._events
+        self._events = []
+        return evs
+
+    def clear(self):
+        # Forget queued events and held-key state (used when unfocused).
+        self._events = []
+        self._down.clear()
+
+    def stop(self):
+        self._stop = True
+        try:
+            if self._hwnd and sys.platform.startswith("win"):
+                import ctypes
+                ctypes.windll.user32.PostMessageW(self._hwnd, 0x0012, 0, 0)  # WM_QUIT
+        except Exception:
+            pass
+
+
+
 # Setup Profiler (Fix 5)
 def timed(threshold: float = 0.1):
     def deco(func):
@@ -871,6 +1081,62 @@ class PianoApp:
     def __init__(self, audio_config: AudioConfig):
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("PC Keyboard Piano | Grandmaster Build")
+
+        # --- Input isolation (prevents macros / OS key rules from interfering) ---
+        # 1) Disable OS keyboard auto-repeat. Without this, the OS injects a stream
+        #    of synthetic KEYDOWN events for a held key, which can look like extra
+        #    presses and can starve/mask other keys. We want ONE keydown per press.
+        try:
+            pygame.key.set_repeat(0)  # 0 = off
+        except Exception:
+            pass
+        # 2) Grab the KEYBOARD ONLY while the window is focused so global
+        #    hotkeys, remappers, and macro tools are less able to intercept keys
+        #    mid-play. The mouse is NOT confined - the cursor can leave freely.
+        #    Released automatically when focus is lost (see _set_input_grab).
+        self._input_grabbed = False
+        self._set_input_grab(True)
+        # Raw Input path: read the keyboard below SDL to recover simultaneous
+        # keys SDL drops. When active, pygame key events are ignored (raw input
+        # drives the note handlers instead) so keys are not counted twice.
+        self.raw_kb = RawKeyboard()
+        self._raw_supported = self.raw_kb.available
+        self._eq_down = False   # debounce for the '=' raw/SDL toggle
+        # --- Key diagnostic overlay (toggle with the ` / ~ grave key) ---
+        # Shows, live, exactly which key events the app RECEIVES. Use it to tell
+        # ghosting (app never sees the keydown) from a software bug (app sees it
+        # but no note). Off by default; no effect on normal play.
+        self._diag = False
+        self._diag_log = []          # recent "(down|up) NAME" strings
+        self._diag_down = set()      # keycodes currently held (note keys only)
+        # --- Guided key diagnostic wizard (launch with the \ backslash key) ---
+        # Walks through 4 prompted held-key combinations and writes a
+        # self-labeling report to key_diagnostic_report.txt. Because the report
+        # states which keys each step ASKED for, comparing asked-vs-received is
+        # unambiguous. Off unless launched.
+        self._wiz_active = False
+        self._wiz_step = 0
+        self._wiz_events = []        # per-step captured raw key events (dicts)
+        self._wiz_accepts = []       # per-step note-on acceptance records
+        self._wiz_results = []       # finished per-step summaries
+        self._wiz_next_rect = None   # clickable Next button (set during draw)
+        self._wiz_env = {}           # SDL / driver / mixer info captured at start
+        # Each step: (human label, list of pygame keycodes to hold together)
+        # Investigating an ORDER-dependent block: a "poisoned" key (f/g/h/j/;/')
+        # appears to stop any key pressed AFTER it from registering, while keys
+        # pressed BEFORE it are fine. These steps contrast press-order. The app
+        # cannot enforce press order, so the on-screen prompt tells you the order
+        # and you press them one at a time, left to right, holding each down.
+        self._wiz_steps = [
+            ("Press in order, hold each: S then D then F", [pygame.K_s, pygame.K_d, pygame.K_f]),
+            ("Press in order, hold each: F then S then D", [pygame.K_f, pygame.K_s, pygame.K_d]),
+            ("Press in order, hold each: S then D then G", [pygame.K_s, pygame.K_d, pygame.K_g]),
+            ("Press in order, hold each: G then S then D", [pygame.K_g, pygame.K_s, pygame.K_d]),
+            ("Press in order, hold each: A then H then J", [pygame.K_a, pygame.K_h, pygame.K_j]),
+            ("Press in order, hold each: H then A then J", [pygame.K_h, pygame.K_a, pygame.K_j]),
+            ("Press in order, hold each: A then ; then '", [pygame.K_a, pygame.K_SEMICOLON, pygame.K_QUOTE]),
+            ("Press in order, hold each: ' then ; then A", [pygame.K_QUOTE, pygame.K_SEMICOLON, pygame.K_a]),
+        ]
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 28)
         self.small_font = pygame.font.Font(None, 22)
@@ -959,6 +1225,14 @@ class PianoApp:
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
             try:
+                self.raw_kb.stop()
+            except Exception:
+                pass
+            try:
+                self._set_input_grab(False)
+            except Exception:
+                pass
+            try:
                 self.synth.clear_cache()
             except Exception:
                 pass
@@ -1028,6 +1302,259 @@ class PianoApp:
                 name = ''
             key.kb = name
 
+    def _set_input_grab(self, grab: bool):
+        # Grab/release ONLY the keyboard so external key rules interfere less.
+        # We deliberately do NOT call pygame.event.set_grab(), because that
+        # confines the MOUSE to the window and would trap the cursor. On older
+        # pygame builds that lack set_keyboard_grab we simply skip the grab
+        # rather than trap the mouse; disabling key-repeat still helps there.
+        if grab == self._input_grabbed:
+            return
+        try:
+            if hasattr(pygame.event, "set_keyboard_grab"):
+                pygame.event.set_keyboard_grab(grab)
+        except Exception:
+            pass
+        self._input_grabbed = grab
+
+    def _diag_note(self, is_down: bool, kc: int, event=None):
+        # Record a raw key event for the diagnostic overlay and, if the guided
+        # test is running, a rich record for the report. Runs for every key
+        # event; cheap when the test/overlay are off.
+        try:
+            name = pygame.key.name(kc)
+        except Exception:
+            name = str(kc)
+        if is_down:
+            self._diag_down.add(kc)
+        else:
+            self._diag_down.discard(kc)
+        self._diag_log.append(f"{'down' if is_down else 'up  '} {name}")
+        if len(self._diag_log) > 12:
+            self._diag_log = self._diag_log[-12:]
+        # If the guided wizard is running, capture a detailed event record.
+        if self._wiz_active:
+            t = pygame.time.get_ticks()
+            scancode = getattr(event, 'scancode', None) if event is not None else None
+            mod = getattr(event, 'mod', None) if event is not None else None
+            self._wiz_events.append({
+                "t": t, "down": is_down, "kc": kc, "name": name,
+                "scancode": scancode, "mod": mod,
+            })
+
+    # ----- Guided key diagnostic wizard -----
+    def start_key_wizard(self):
+        # Do not run during recording; it would pollute takes.
+        if self.recorder.is_recording:
+            self.set_status("Stop recording before the key test.", RED, 2200)
+            return
+        self._wiz_active = True
+        self._wiz_step = 0
+        self._wiz_events = []
+        self._wiz_accepts = []
+        self._wiz_results = []
+        self._wiz_env = self._capture_env()
+        self._flush_all_pressed()
+        self.set_status("Key test started.", BLUE, 1500)
+
+    def cancel_key_wizard(self):
+        self._wiz_active = False
+        self._wiz_events = []
+        self._wiz_accepts = []
+        self._wiz_results = []
+        self.set_status("Key test cancelled.", DARK_GRAY, 1500)
+
+    def _capture_env(self):
+        # Snapshot the layers a keypress passes through, so the report can point
+        # at where a drop is happening (SDL/driver vs mixer vs app logic).
+        env = {}
+        try:
+            env["pygame"] = pygame.version.ver
+        except Exception:
+            env["pygame"] = "?"
+        try:
+            env["sdl"] = ".".join(str(x) for x in pygame.get_sdl_version())
+        except Exception:
+            env["sdl"] = "?"
+        try:
+            env["video_driver"] = pygame.display.get_driver()
+        except Exception:
+            env["video_driver"] = "?"
+        for var in ("SDL_VIDEODRIVER", "SDL_HINT_WINDOWS_ENABLE_MESSAGELOOP"):
+            env[var] = os.environ.get(var, "(unset)")
+        try:
+            env["key_repeat"] = str(pygame.key.get_repeat())
+        except Exception:
+            env["key_repeat"] = "?"
+        try:
+            env["keyboard_grabbed"] = str(bool(self._input_grabbed))
+        except Exception:
+            env["keyboard_grabbed"] = "?"
+        try:
+            if pygame.mixer.get_init():
+                env["mixer_channels"] = str(pygame.mixer.get_num_channels())
+                env["mixer_init"] = str(pygame.mixer.get_init())
+            else:
+                env["mixer_channels"] = "0"
+                env["mixer_init"] = "(not initialized)"
+        except Exception:
+            env["mixer_channels"] = "?"
+        env["platform"] = sys.platform
+        return env
+
+    def _wiz_advance(self):
+        # Summarize the current step, then move on or finish.
+        label, wanted = self._wiz_steps[self._wiz_step]
+        wanted_names = [pygame.key.name(k) for k in wanted]
+        downs = [e["name"] for e in self._wiz_events if e["down"]]
+        received_down = []
+        for n in downs:
+            if n not in received_down:
+                received_down.append(n)
+        missing = [n for n in wanted_names if n not in received_down]
+        extra = [n for n in received_down if n not in wanted_names]
+        # Which received keys did note-on actually accept (play)?
+        played = [a["name"] for a in self._wiz_accepts if a["outcome"].startswith("played")]
+        rejected = [(a["name"], a["outcome"]) for a in self._wiz_accepts
+                    if a["outcome"].startswith("REJECTED")]
+        # received but never reached a "played" outcome = software-side loss
+        not_played = [n for n in received_down if n not in played]
+        self._wiz_results.append({
+            "step": self._wiz_step + 1,
+            "label": label,
+            "asked": wanted_names,
+            "received_down": received_down,
+            "missing": missing,
+            "extra": extra,
+            "played": played,
+            "not_played": not_played,
+            "rejected": rejected,
+            "raw": list(self._wiz_events),
+            "accepts": list(self._wiz_accepts),
+        })
+        self._wiz_events = []
+        self._wiz_accepts = []
+        self._wiz_step += 1
+        if self._wiz_step >= len(self._wiz_steps):
+            path = self._write_wiz_report()
+            self._wiz_active = False
+            if path:
+                self.set_status("Key test done. Report saved next to the app.", GREEN, 4000)
+            else:
+                self.set_status("Key test done, but the report could not be saved.", RED, 4000)
+
+    def _write_wiz_report(self):
+        import datetime
+        lines = []
+        lines.append("PC Keyboard Piano - Key Diagnostic Report")
+        lines.append("Generated: " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        lines.append("")
+        lines.append("ENVIRONMENT (the layers a keypress passes through)")
+        for k in ("platform", "pygame", "sdl", "video_driver", "SDL_VIDEODRIVER",
+                  "key_repeat", "keyboard_grabbed", "mixer_init", "mixer_channels"):
+            if k in self._wiz_env:
+                lines.append(f"  {k:<16}: {self._wiz_env[k]}")
+        lines.append("")
+        lines.append("HOW TO READ THIS")
+        lines.append("  Each step asked you to HOLD a set of keys together, then release.")
+        lines.append("  'asked'    = what the step told you to press.")
+        lines.append("  'received' = KEYDOWNs the app got from the keyboard (via SDL).")
+        lines.append("  'played'   = of those, which the app turned into a note.")
+        lines.append("  A key can drop at one of three layers, and this report tells")
+        lines.append("  them apart:")
+        lines.append("   1. asked but NOT received  -> lost before the app. Keyboard")
+        lines.append("      ghosting (hardware) or the SDL/OS layer. No app fix recovers")
+        lines.append("      it; a raw-input path or different keyboard is the only cure.")
+        lines.append("   2. received but NOT played -> the app got the key but its own")
+        lines.append("      logic rejected it. That IS a software bug; the reason is shown.")
+        lines.append("   3. received and played     -> worked correctly.")
+        lines.append("  'scancode' is the physical key id before layout translation;")
+        lines.append("  keys that collide in a keyboard matrix often share nearby")
+        lines.append("  scancodes. 'mod' is the modifier state at that instant.")
+        lines.append("=" * 64)
+        any_missing = False
+        any_not_played = False
+        for r in self._wiz_results:
+            lines.append("")
+            lines.append(f"STEP {r['step']}: hold  {r['label']}")
+            lines.append(f"  asked    : {', '.join(r['asked'])}")
+            lines.append(f"  received : {', '.join(r['received_down']) if r['received_down'] else '(none)'}")
+            lines.append(f"  played   : {', '.join(r['played']) if r['played'] else '(none)'}")
+            if r['missing']:
+                any_missing = True
+                lines.append(f"  MISSING (asked, not received): {', '.join(r['missing'])}")
+                lines.append("           -> lost before the app (hardware/SDL layer)")
+            else:
+                lines.append("  MISSING (asked, not received): none")
+            if r['not_played']:
+                any_not_played = True
+                lines.append(f"  RECEIVED BUT NOT PLAYED     : {', '.join(r['not_played'])}")
+                lines.append("           -> app logic rejected these (software)")
+            if r['rejected']:
+                for nm, why in r['rejected']:
+                    lines.append(f"             {nm}: {why}")
+            if r['extra']:
+                lines.append(f"  unexpected extra keys       : {', '.join(r['extra'])}")
+            lines.append("  raw event order (t ms | dir | key | scancode | mod):")
+            for e in r['raw']:
+                sc = e.get('scancode')
+                md = e.get('mod')
+                sc = '?' if sc is None else sc
+                md = '?' if md is None else md
+                lines.append(f"     {e['t']:>8} ms  {'DOWN' if e['down'] else 'UP  '}  "
+                             f"{e['name']:<10} sc={sc:<5} mod={md}")
+            if r['accepts']:
+                lines.append("  note-on outcomes (with mixer channel state):")
+                for a in r['accepts']:
+                    lines.append(f"     {a['t']:>8} ms  {a['name']:<10} {a['outcome']}"
+                                 f"  [busy {a['busy_channels']}, free {a['free_channels']},"
+                                 f" this-key {a['key_channels']}]")
+        lines.append("")
+        lines.append("=" * 64)
+        lines.append("VERDICT")
+        if any_missing and not any_not_played:
+            lines.append("  Keys were asked for but never RECEIVED while others were held,")
+            lines.append("  and everything the app received, it played. The loss is before")
+            lines.append("  the app: keyboard ghosting (hardware) or the SDL/OS input layer.")
+            lines.append("  Next step: try the raw-input path; if it also misses the keys,")
+            lines.append("  the keyboard matrix is the limit and only different hardware")
+            lines.append("  (NKRO/6KRO) fixes it.")
+        elif any_not_played:
+            lines.append("  At least one key was RECEIVED by the app but not turned into a")
+            lines.append("  note. That is a software bug in this program. The per-key reason")
+            lines.append("  is listed under each step ('RECEIVED BUT NOT PLAYED'). Send this")
+            lines.append("  report back so the exact branch can be fixed.")
+            if any_missing:
+                lines.append("  NOTE: some keys were also never received (see MISSING). There")
+                lines.append("  may be BOTH a hardware/SDL loss and a software issue.")
+        else:
+            lines.append("  Every asked key was received AND played in every step. Input is")
+            lines.append("  working correctly in this test. If you still hear dropouts while")
+            lines.append("  playing, capture them with the live overlay (grave key) and note")
+            lines.append("  the exact combination, then send this report and that combination.")
+        text = "\n".join(lines) + "\n"
+        # Write next to the running app / script.
+        try:
+            base = os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv and sys.argv[0] else os.getcwd()
+        except Exception:
+            base = os.getcwd()
+        path = os.path.join(base, "key_diagnostic_report.txt")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            logger.info("Key diagnostic report written to %s", path)
+            return path
+        except Exception as e:
+            logger.warning("Could not write key diagnostic report: %s", e)
+            # Fallback to current working directory.
+            try:
+                alt = os.path.join(os.getcwd(), "key_diagnostic_report.txt")
+                with open(alt, "w", encoding="utf-8") as f:
+                    f.write(text)
+                return alt
+            except Exception:
+                return None
+
     def _flush_all_pressed(self):
         # Release any pressed keyboard notes (by keycode)
         for kc in list(self.pressed_kc.keys()):
@@ -1072,7 +1599,11 @@ class PianoApp:
             pygame.draw.rect(self.screen, (25, 25, 28), bg_rect, border_radius=8)
             self.screen.blit(txt, txt.get_rect(center=(WIDTH // 2, 25)))
         rec_text = "● RECORDING" if self.recorder.is_recording else "READY"
-        info = f"{rec_text}  |  Vol {int(self.master_volume*100)}%  |  Octave {self.octave_shift:+d}"
+        if self._raw_supported:
+            inp = "RAW" if self.raw_kb.available else "SDL"
+            info = f"{rec_text}  |  Vol {int(self.master_volume*100)}%  |  Octave {self.octave_shift:+d}  |  Input: {inp} (= to toggle)"
+        else:
+            info = f"{rec_text}  |  Vol {int(self.master_volume*100)}%  |  Octave {self.octave_shift:+d}"
         txt = self.small_font.render(info, True, (200, 200, 205))
         self.screen.blit(txt, txt.get_rect(center=(WIDTH // 2, 70)))
         hint = "1: Record  |  2: Save WAV  |  3: MP3  |  4: Preview  |  F11: Reset map  |  F12: Learn map"
@@ -1096,23 +1627,124 @@ class PianoApp:
             txt = pygame.font.Font(None, 30).render(prompt, True, BLUE)
             self.screen.blit(txt, txt.get_rect(center=(WIDTH // 2, 120)))
 
+        # Key diagnostic overlay (toggle with ` / ~ ). Shows exactly what the
+        # app RECEIVES so you can tell hardware ghosting from a software bug.
+        if self._diag:
+            dfont = pygame.font.Font(None, 26)
+            held_names = []
+            for kc in sorted(self._diag_down):
+                try:
+                    held_names.append(pygame.key.name(kc))
+                except Exception:
+                    held_names.append(str(kc))
+            lines = ["KEY DIAGNOSTIC  (` to toggle)",
+                     f"held now ({len(held_names)}): {' '.join(held_names) if held_names else '-'}",
+                     "recent events:"]
+            lines += ["  " + s for s in self._diag_log[-8:]]
+            panel_w, lh = 360, 24
+            panel_h = 16 + lh * len(lines)
+            panel = pygame.Surface((panel_w, panel_h))
+            panel.set_alpha(230)
+            panel.fill((14, 14, 18))
+            self.screen.blit(panel, (10, 140))
+            for i, ln in enumerate(lines):
+                col = (120, 200, 255) if i == 0 else (210, 210, 215)
+                self.screen.blit(dfont.render(ln, True, col), (20, 150 + i * lh))
+
+        # Guided key-test wizard: a modal panel with the current prompt, a live
+        # list of what the app has received this step, and a Next button.
+        self._wiz_next_rect = None
+        if self._wiz_active and self._wiz_step < len(self._wiz_steps):
+            label, wanted = self._wiz_steps[self._wiz_step]
+            # Dim the background.
+            dim = pygame.Surface((WIDTH, HEIGHT))
+            dim.set_alpha(200)
+            dim.fill((8, 8, 10))
+            self.screen.blit(dim, (0, 0))
+
+            title_font = pygame.font.Font(None, 48)
+            body_font = pygame.font.Font(None, 34)
+            small = pygame.font.Font(None, 26)
+
+            step_txt = f"KEY TEST  -  Step {self._wiz_step + 1} of {len(self._wiz_steps)}"
+            self.screen.blit(title_font.render(step_txt, True, (120, 200, 255)),
+                             (WIDTH // 2 - 220, 120))
+
+            self.screen.blit(body_font.render("Hold ALL of these keys down at once:", True, (230, 230, 235)),
+                             (WIDTH // 2 - 260, 190))
+            self.screen.blit(title_font.render(label, True, GREEN),
+                             (WIDTH // 2 - title_font.size(label)[0] // 2, 235))
+
+            self.screen.blit(small.render("Then let go, and click Next (or press Enter).", True, (200, 200, 205)),
+                             (WIDTH // 2 - 200, 300))
+
+            # Live list of what the app has actually received this step.
+            recd = []
+            for e in self._wiz_events:
+                if e["down"] and e["name"] not in recd:
+                    recd.append(e["name"])
+            wanted_names = [pygame.key.name(k) for k in wanted]
+            self.screen.blit(small.render("received so far: " + (", ".join(recd) if recd else "(nothing yet)"),
+                                          True, (170, 200, 170)), (WIDTH // 2 - 260, 345))
+
+            # Next button.
+            btn = pygame.Rect(WIDTH // 2 - 90, 400, 180, 56)
+            pygame.draw.rect(self.screen, (40, 90, 200), btn, border_radius=10)
+            pygame.draw.rect(self.screen, (120, 160, 255), btn, 2, border_radius=10)
+            nlabel = "Next" if self._wiz_step < len(self._wiz_steps) - 1 else "Finish"
+            ntxt = body_font.render(nlabel, True, (255, 255, 255))
+            self.screen.blit(ntxt, ntxt.get_rect(center=btn.center))
+            self._wiz_next_rect = btn
+
+            self.screen.blit(small.render("Esc = cancel the test", True, (150, 150, 155)),
+                             (WIDTH // 2 - 90, 475))
+
     # ----- Note handling by keycode -----
     def handle_note_on_kc(self, kc: int):
         midi = self.kc_to_midi.get(kc)
         if midi is None:
+            self._wiz_accept(kc, "REJECTED: key not in current keymap")
             return
         if kc in self.pressed_kc:
+            self._wiz_accept(kc, "ignored: already held (auto-repeat guard)")
             return
         key = self.midi_to_key.get(midi)
         if not key:
+            self._wiz_accept(kc, "REJECTED: no piano key object for midi")
             return
         midi_used = midi + 12 * self.octave_shift
         if MIN_MIDI <= midi_used <= MAX_MIDI:
             self.pressed_kc[kc] = (key, midi_used)
             key.play(midi_used, volume=self.master_volume)
             self.recorder.note_on(midi_used)
+            self._wiz_accept(kc, f"played {midi_to_name(midi_used)}", key=key)
         else:
             self.set_status(f"{midi_to_name(midi_used)} out of range.", RED, 1200)
+            self._wiz_accept(kc, f"REJECTED: {midi_to_name(midi_used)} out of range")
+
+    def _wiz_accept(self, kc, outcome, key=None):
+        # During the guided test, record what the note-on logic did with a key
+        # the app received, plus mixer state, so the report can show whether a
+        # drop was hardware (never received) or software (received but rejected).
+        if not self._wiz_active:
+            return
+        try:
+            name = pygame.key.name(kc)
+        except Exception:
+            name = str(kc)
+        busy = free = -1
+        try:
+            if pygame.mixer.get_init():
+                total = pygame.mixer.get_num_channels()
+                busy = sum(1 for i in range(total) if pygame.mixer.Channel(i).get_busy())
+                free = total - busy
+        except Exception:
+            pass
+        nchan = len(key.channels) if key is not None else None
+        self._wiz_accepts.append({
+            "t": pygame.time.get_ticks(), "name": name, "outcome": outcome,
+            "busy_channels": busy, "free_channels": free, "key_channels": nchan,
+        })
 
     def handle_note_off_kc(self, kc: int):
         item = self.pressed_kc.pop(kc, None)
@@ -1201,6 +1833,33 @@ class PianoApp:
         self.set_status("Ready. F12 to learn a custom keymap. F11 resets to default.", DARK_GRAY, 3000)
         while running:
             self.recorder.maybe_begin_after_count_in()
+            # If raw input is active, translate its events into synthetic pygame
+            # key events so the existing handling below works unchanged. Real
+            # SDL key events are then ignored (see the guard in the loop) to
+            # avoid double-counting.
+            #
+            # Raw Input uses RIDEV_INPUTSINK, so it keeps delivering keys even
+            # when this window is NOT focused. Gate on focus here so notes do
+            # not play while another app is in the foreground. When unfocused,
+            # drain and discard the queue and release any held notes once.
+            if self.raw_kb.available:
+                try:
+                    focused = bool(pygame.key.get_focused())
+                except Exception:
+                    focused = True
+                if focused:
+                    for is_down, pk in self.raw_kb.poll():
+                        evtype = pygame.KEYDOWN if is_down else pygame.KEYUP
+                        try:
+                            pygame.event.post(pygame.event.Event(
+                                evtype, {"key": pk, "mod": 0, "unicode": "",
+                                         "scancode": 0, "_raw": True}))
+                        except Exception:
+                            pass
+                else:
+                    self.raw_kb.clear()  # discard background keystrokes + state
+                    if self.pressed_kc:
+                        self._flush_all_pressed()
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
@@ -1209,15 +1868,82 @@ class PianoApp:
                     self.metronome.click()
                     continue
 
-                # Focus loss -> flush notes so nothing sticks
-                if event.type == getattr(pygame, 'WINDOWFOCUSLOST', None) or (
+                # Raw-input toggle ('='). Handled here, before the raw-active
+                # SDL-suppression guard below, so it works no matter which path
+                # is live. Debounced so one physical press flips once.
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_EQUALS \
+                        and getattr(self, "_raw_supported", False):
+                    if not self._eq_down:
+                        self._eq_down = True
+                        self.raw_kb.available = not self.raw_kb.available
+                        self.raw_kb.clear()
+                        self._flush_all_pressed()
+                        self.set_status(
+                            f"Raw Input {'ON' if self.raw_kb.available else 'OFF'} "
+                            f"(SDL path {'off' if self.raw_kb.available else 'on'})",
+                            BLUE, 2000)
+                    continue
+                if event.type == pygame.KEYUP and event.key == pygame.K_EQUALS \
+                        and getattr(self, "_raw_supported", False):
+                    self._eq_down = False
+                    continue
+
+                # When raw input is active, ignore SDL's own key events; only
+                # our injected synthetic ones (marked _raw) drive notes.
+                if self.raw_kb.available and event.type in (pygame.KEYDOWN, pygame.KEYUP) \
+                        and not getattr(event, "_raw", False):
+                    continue
+
+                # --- Window focus handling ---
+                # On focus LOSS: release all held notes (so nothing sticks) and
+                # release the keyboard grab so the user can use other apps.
+                # On focus GAIN: re-grab the keyboard so macros/hotkeys are
+                # suppressed again while playing.
+                _wfl = getattr(pygame, 'WINDOWFOCUSLOST', -1)
+                _wfg = getattr(pygame, 'WINDOWFOCUSGAINED', -1)
+                _wmin = getattr(pygame, 'WINDOWMINIMIZED', -1)
+                if event.type in (_wfl, _wmin) or (
                     event.type == pygame.ACTIVEEVENT and getattr(event, 'state', 0) & 2 and getattr(event, 'gain', 1) == 0
                 ):
                     self._flush_all_pressed()
+                    self._set_input_grab(False)
+                    continue
+                if event.type == _wfg or (
+                    event.type == pygame.ACTIVEEVENT and getattr(event, 'state', 0) & 2 and getattr(event, 'gain', 1) == 1
+                ):
+                    self._set_input_grab(True)
                     continue
 
                 # --- Keyboard Input ---
                 if event.type == pygame.KEYDOWN:
+                    # Diagnostic: record the raw event the instant it arrives,
+                    # before any note/control logic can consume or skip it.
+                    if event.key != pygame.K_BACKQUOTE:
+                        self._diag_note(True, event.key, event)
+                    # Toggle the diagnostic overlay with the ` / ~ grave key.
+                    if event.key == pygame.K_BACKQUOTE:
+                        self._diag = not self._diag
+                        continue
+
+                    # Guided key-test wizard has priority over everything else.
+                    if self._wiz_active:
+                        if event.key == pygame.K_ESCAPE:
+                            self.cancel_key_wizard()
+                            continue
+                        if event.key == pygame.K_RETURN:
+                            # Enter also advances to the next step.
+                            self._wiz_advance()
+                            continue
+                        # Let the asked-for keys still play so the user gets
+                        # audible/visual feedback of what registered.
+                        self.handle_note_on_kc(event.key)
+                        continue
+
+                    # Launch the guided key test with the \ backslash key.
+                    if event.key == pygame.K_BACKSLASH:
+                        self.start_key_wizard()
+                        continue
+
                     # Mapping mode consumes keys first
                     if self.mapping_mode:
                         if event.key == pygame.K_ESCAPE:
@@ -1344,6 +2070,8 @@ class PianoApp:
                     continue
 
                 elif event.type == pygame.KEYUP:
+                    if event.key != pygame.K_BACKQUOTE:
+                        self._diag_note(False, event.key, event)
                     if event.key == pygame.K_TAB:
                         self.sustain_off()
                     else:
@@ -1351,14 +2079,23 @@ class PianoApp:
 
                 # --- Mouse Input ---
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    # During the key test, clicks only operate the Next button.
+                    if self._wiz_active:
+                        if self._wiz_next_rect and self._wiz_next_rect.collidepoint(event.pos):
+                            self._wiz_advance()
+                        continue
                     key = self.find_key_at(event.pos)
                     if key:
                         self.mouse_note_on(key)
                 elif event.type == pygame.MOUSEMOTION and event.buttons[0]:
+                    if self._wiz_active:
+                        continue
                     key = self.find_key_at(event.pos)
                     if key:
                         self.mouse_note_on(key)
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    if self._wiz_active:
+                        continue
                     self.mouse_note_off_all()
 
             self.draw_ui()

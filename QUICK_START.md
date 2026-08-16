@@ -1,57 +1,52 @@
 # Quick Start: Building the Executable
 
-This guide explains how to create a standalone `.exe` file for the PC Keyboard Piano application using PyInstaller and a pre-existing `.spec` file.
+You can build a standalone Windows .exe by double-clicking `BUILD_EXE.bat`. There
+is nothing else to configure, and you do not need a `.spec` file. The script
+generates the build settings on its own each time.
 
-This assumes you have Python and `pip` installed on your system.
+## What you need first
 
-### Step 1: Set Up a Virtual Environment
+Python 3.13.12 installed, with the "py launcher" option enabled during
+installation. The build script finds Python through the launcher, so Python does
+not have to be on your PATH. If a different Python version is on PATH, that is
+fine; the script still locates 3.13.12 through the launcher.
 
-First, create an isolated Python environment. This ensures that the dependencies for this project don't conflict with other Python projects on your system.
+If you do not have the right version, the script opens the download page for you
+and stops.
 
-Open your terminal or command prompt in the project directory.
+## How to build
 
-```sh
-# Create the virtual environment folder named 'venv'
-python -m venv venv
+1. Make sure these files are in the project folder:
+   * `BUILD_EXE.bat`
+   * `Keyboard.py`
+   * `requirements.txt`
+   * `icon.ico` (optional; used as the app icon if present)
+   * `version.txt` (optional; embeds Windows version details if present)
+2. Double-click `BUILD_EXE.bat`.
 
-# Activate the environment on Windows
-.\venv\Scripts\activate
+The script creates a virtual environment in `.venv`, installs the dependencies
+and PyInstaller into it, and builds the executable. None of that gets committed
+to git, because `.gitignore` excludes the virtual environment, the build folders,
+and the generated `.spec`.
 
-# Or, activate the environment on macOS/Linux
-source venv/bin/activate
+## Where the result goes
+
+When the build finishes, your executable is at:
+
 ```
-You will know it's active when you see `(venv)` at the beginning of your command prompt line.
-
-### Step 2: Install All Required Dependencies
-
-With the virtual environment active, install PyInstaller and all the libraries the script needs to run. It is highly recommended to have these listed in a `requirements.txt` file.
-
-```sh
-# Install PyInstaller and other packages from your requirements file
-pip install -r requirements.txt
-```
-
-### Step 3: Build the Executable from the `.spec` file
-
-PyInstaller uses a `.spec` file to understand how to bundle your application. Since you already have this file, the process is straightforward.
-
-Make sure your `Keyboard.spec` file is in the root of your project directory. Run the following command:
-
-```sh
-pyinstaller Keyboard.spec
+dist\Pyano Keyboard.exe
 ```
 
-PyInstaller will read the configuration from the spec file and begin the bundling process. You will see a lot of output in the console as it analyzes imports and packages the files.
+That single file is the whole app. You can copy it anywhere and run it on a
+compatible Windows machine without Python installed.
 
-### Step 4: Locate and Run Your Executable
+## Rebuilding
 
-Once PyInstaller finishes, it will have created two new folders: `build` and `dist`.
+Just run `BUILD_EXE.bat` again. It reuses the existing `.venv` if one is already
+there and rebuilds the exe from scratch (`--clean --noconfirm`), so you always
+get a fresh build.
 
-Your final, runnable application is located inside the `dist` folder.
+## Renaming things
 
-*   Navigate into the `dist` directory.
-*   You will find a folder inside (usually with the same name as your app).
-*   Inside that folder is your `.exe` file, along with all the necessary supporting files.
-
-You can now run this `.exe` on any compatible Windows machine, even if it doesn't have Python installed. The entire `dist/your_app_name` folder must be distributed together.
-```
+If you rename the script or want a different exe name, edit the four variables at
+the top of `BUILD_EXE.bat` (`SCRIPT_NAME`, `EXE_NAME`, `ICON`, `VERSION_FILE`).
