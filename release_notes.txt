@@ -9,6 +9,283 @@ actually changed.
 
 
 -------------------------------------------------------------------------------
+2026-08-15 - Fix: '=' would not toggle Raw Input back off
+-------------------------------------------------------------------------------
+BUG
+  The '=' raw/SDL toggle was handled inside the note-key section that is SKIPPED
+  when raw input is active (that section ignores non-raw SDL key events). Its
+  behavior depended on which path was live and it could fail to switch back, and
+  it had no debounce so a single press could bounce.
+
+FIX
+  * Moved the '=' toggle ahead of the raw-active SDL-suppression guard so it is
+    handled path-independently: it fires whether the key arrives via SDL or via
+    the raw path.
+  * Added a debounce (_eq_down) so one physical press flips exactly once, reset
+    on key-up.
+  * On toggle, clear the raw queue/held-state and flush held notes so nothing
+    sticks across the switch.
+
+FILES CHANGED
+  Keyboard.py, release_notes.txt
+
+-------------------------------------------------------------------------------
+2026-08-15 - Fix: notes played while another app was focused (raw input)
+-------------------------------------------------------------------------------
+BUG
+  With the Raw Input path active, notes kept sounding when another application
+  was brought to the foreground. Raw Input registers with RIDEV_INPUTSINK, which
+  intentionally delivers keystrokes even when the window is not focused, so it
+  bypassed the normal focus-loss handling.
+
+FIX
+  * The run loop now gates raw-input events on window focus via
+    pygame.key.get_focused(). When the window is not focused, raw keystrokes are
+    discarded and any held notes are released once, so nothing plays or sticks
+    while you are in another app.
+  * Added RawKeyboard.clear() to drop queued events and held-key state when
+    unfocused, so state does not drift; on returning focus you simply re-press.
+
+FILES CHANGED
+  Keyboard.py, release_notes.txt
+
+-------------------------------------------------------------------------------
+2026-08-15 - Add built-in Raw Input keyboard path (Windows)
+-------------------------------------------------------------------------------
+Rather than only probing, the app can now READ the keyboard through the Windows
+Raw Input API, bypassing SDL's keyboard message translation. If SDL was the
+layer dropping simultaneous keys, this fixes it outright.
+
+WHAT
+  * New RawKeyboard class: registers for WM_INPUT on a message-only window in a
+    background thread and reads key up/down straight from the HID layer. It maps
+    Windows Virtual-Key codes to the same pygame key constants the app already
+    uses, so raw input drives the existing note handlers (octave, sustain,
+    recording, remap all keep working). Verified the map for the trouble keys
+    (f,g,h,j,;,') and controls (Tab, F12, etc.).
+  * When raw input is active, the run loop injects synthetic pygame key events
+    from the raw queue and ignores SDL's own key events (marked _raw to tell
+    them apart), so keys are never double-counted.
+  * Turns on automatically on Windows when it initializes; falls back to the
+    normal pygame path on other systems or if setup fails (verified graceful
+    fallback: available=False, empty poll, no errors).
+  * '=' toggles Raw vs SDL live so you can A/B compare in one session. The info
+    line shows "Input: RAW" or "Input: SDL".
+  * Thread is stopped cleanly on exit.
+
+WHY
+  The key-test reports showed the app played everything it RECEIVED, and missing
+  keys never arrived as events - so the loss is at or below SDL. Raw Input reads
+  below SDL. If the dropped keys now come through (watch the guided test or just
+  play f+g+a), SDL was the culprit and this is the fix. If they still drop with
+  Input: RAW, the loss is in the keyboard/USB layer and no software recovers it.
+
+HOW TO CHECK
+  Play the combination that failed (e.g. hold a, then f, then g) with the info
+  line showing Input: RAW. If all three sound, it is fixed. Press '=' to flip to
+  SDL and feel the difference. The guided test (\) also now records whatever the
+  active path delivers.
+
+FILES CHANGED
+  Keyboard.py, README.md, release_notes.txt
+
+-------------------------------------------------------------------------------
+2026-08-15 - Add raw-input probe; characterize the pair/slot behavior
+-------------------------------------------------------------------------------
+User characterized the failure precisely. It is a per-pair "shared slot" rule,
+not a note-count limit and not specific-key corruption:
+  * The pairs are {f,g}, {h,j}, {;,'}. Each pair behaves as ONE shared slot.
+  * Hold one key of a pair: all normal keys work, plus exactly one key from
+    each OTHER pair - never both keys of the same pair at once.
+  * Both keys of one pair alone: work. Both keys of a pair plus anything else
+    pressed at the same instant: everything collapses to the pair.
+This is the classic signature of a keyboard MATRIX: the two keys in each pair
+share a row/column line and cannot be resolved when pressed together.
+
+The first key-test report (all steps) showed every key the app RECEIVED was
+also PLAYED - i.e. the note-on code is not the cause. Missing keys never
+arrived as events at all. So the loss is at or below SDL, not in app logic.
+
+CHANGES
+  * Added raw_input_test.py: a standalone, stdlib-only (ctypes) probe that reads
+    the keyboard through the Windows Raw Input API, below SDL and pygame. It
+    prints a live "held now" list and writes raw_input_report.txt. This is the
+    decisive test: if raw input shows a pair's two keys coexisting while the app
+    could not, the loss is in SDL and the app can move to raw input; if raw
+    input shows the same pairing, the limit is the keyboard/USB layer and no
+    software change recovers it.
+  * Retargeted the in-app key test to probe PRESS ORDER (each step names the
+    order to press and hold), since order was shown to matter.
+  * TROUBLESHOOTING.md documents the raw-input probe and the gaming-keyboard
+    check (a true NKRO keyboard is the one case that could disprove the matrix
+    explanation).
+
+STATUS
+  Cause is at or below the SDL input layer, confirmed by the app's own report
+  (received == played for everything). The raw-input probe will show whether it
+  is SDL (fixable) or hardware/USB (not fixable). Awaiting raw_input_report.txt.
+
+FILES CHANGED
+  Keyboard.py, raw_input_test.py (new), TROUBLESHOOTING.md, release_notes.txt
+
+-------------------------------------------------------------------------------
+2026-08-15 - Retarget key test at the reported pair failure
+-------------------------------------------------------------------------------
+User clarified the real symptom: it is NOT a simultaneous-key COUNT limit and it
+is NOT ghosting (reproduced across four laptops, a Logitech gaming keyboard, and
+several Microsoft/Dell keyboards - different matrices, same result, so it is
+software). The actual symptom is that specific PAIRS will not sound together
+while any THIRD key is held: f+g, h+j, and ;+' .
+
+CHANGES
+  * Retargeted the 8-step key test at this exact behavior. Steps 1-3 hold each
+    suspect pair (f+g, h+j, ;+') WITH a third key held; steps 4-6 hold the same
+    pairs ALONE. The report then contrasts the two directly, proving whether the
+    third key is what suppresses the pair, and whether the pair's second key is
+    even received when a third is down.
+
+INVESTIGATION STATUS
+  Code inspection has not yet located the cause: the note-on path for these keys
+  is identical to keys that work, midi_to_key maps each note to a distinct key
+  object (no aliasing), and a headless repro of the channel logic did not drop
+  the pair. The cause is therefore expected to be in event delivery or a spot
+  not yet found; the diagnostic report is designed to name the exact layer.
+  Prior hardware/ghosting explanations were WRONG given the cross-hardware
+  evidence and are retracted.
+
+FILES CHANGED
+  Keyboard.py, release_notes.txt
+
+-------------------------------------------------------------------------------
+2026-08-15 - Deepen the key test so the report points at the failing layer
+-------------------------------------------------------------------------------
+The 8-step test now instruments every layer a keypress passes through, so the
+saved report does not just say "missing" - it says WHERE the key was lost.
+
+WHAT THE REPORT NOW SHOWS
+  * Three-way per-key classification per step:
+      - asked but NOT received  -> lost before the app (hardware ghosting or the
+        SDL/OS input layer); no app change can recover it.
+      - received but NOT played -> the app got the key and its own note-on logic
+        rejected it (a software bug); the exact reason is printed next to the
+        key (not in keymap / already held / no key object / out of range).
+      - received AND played     -> worked.
+  * Raw event order per step with timestamp, key name, SCANCODE (physical key id
+    before layout translation), and MODIFIER state at that instant.
+  * note-on outcomes with live mixer CHANNEL STATE (busy/free/this-key) so
+    channel starvation would be visible if it ever occurred.
+  * An ENVIRONMENT header captured at test start: platform, pygame and SDL
+    versions, video driver, SDL_VIDEODRIVER, key-repeat setting, keyboard-grab
+    state, and mixer init/channel count.
+  * A layered VERDICT that distinguishes a hardware/SDL loss from a software
+    rejection, and flags when BOTH are present.
+
+WHY
+  Earlier the report could only say a key was missing. It could not tell a key
+  that never arrived (hardware) from a key the app received and then dropped
+  (software). handle_note_on_kc is now instrumented at each early-return branch,
+  and the raw capture records scancode + mod, so the report distinguishes them
+  and names the responsible layer.
+
+FILES CHANGED
+  Keyboard.py, TROUBLESHOOTING.md, release_notes.txt
+
+
+-------------------------------------------------------------------------------
+2026-08-15 - Add guided 8-step key test with saved report
+-------------------------------------------------------------------------------
+Turned the diagnostic into a guided, self-labeling test so the held-key
+question can be answered without any guesswork.
+
+WHAT
+  * New guided key test, launched with the backslash key (\). It walks through
+    eight prompted steps. Each step names a set of keys, asks the user to hold
+    them all at once, release, then click Next (or press Enter):
+       1) A S D      2) D F G      3) F G H      4) G H J
+       5) H J K      6) J K L      7) F G H J K  8) A S D F G H J K L
+  * Because the test states which keys each step ASKED for, the output is
+    unambiguous. On finish it writes key_diagnostic_report.txt next to the app,
+    listing asked vs received per step, any MISSING keys, the raw event order
+    with timestamps, and a plain-language verdict (ghosting vs not).
+  * A modal panel shows the current prompt, a live "received so far" list, and a
+    clickable Next button. Esc cancels. Notes still sound during the test so the
+    user gets feedback. Mouse input is limited to the Next button while testing.
+  * The live overlay (grave key) from the previous change remains for spot
+    checks.
+
+WHY THE COVERAGE
+  Expanded from the original 4 combinations to 8 so the test spans the whole
+  white-key row (A through L), not just the f/g/h/j/k cluster, catching matrix
+  collisions that involve neighboring keys too.
+
+DOCS
+  * README controls table: added the backslash launcher.
+  * TROUBLESHOOTING.md: made the guided test the primary self-test.
+
+FILES CHANGED
+  Keyboard.py, README.md, TROUBLESHOOTING.md, release_notes.txt
+
+
+-------------------------------------------------------------------------------
+2026-08-15 - Add key diagnostic overlay
+-------------------------------------------------------------------------------
+Added a tool to settle whether the held-key dropouts (reported around f, g, h,
+j, k) are hardware ghosting or a software bug.
+
+WHY
+  The visible key highlight and the note audio are both set inside key.play(),
+  which only runs if handle_note_on_kc runs, which only runs if the app receives
+  a KEYDOWN for that key. So "no highlight AND no sound" means either the app
+  never got the event (hardware) or something short-circuits before play()
+  (software). A code review found no key-specific short-circuit: f/g/h/j/k map
+  to unique MIDI notes (59/60/62/64/65), route through the same event path as
+  keys that work, and share no PianoKey objects. The overlay makes the
+  distinction observable instead of theoretical.
+
+WHAT
+  * New diagnostic overlay toggled with the grave key (` / ~). It logs every raw
+    KEYDOWN/KEYUP the instant it arrives, before any note or control logic, and
+    shows which note keys are currently held. If a key that goes silent never
+    shows a "down" line while others are held, the event never reached the app
+    (ghosting). If it shows "down" but does not light up, that is a software bug
+    to report.
+  * The grave key is not used by any note mapping, so the toggle does not
+    interfere with playing. Overlay is off by default and has no effect on normal
+    use.
+
+DOCS
+  * README controls table: added the grave-key toggle.
+  * TROUBLESHOOTING.md: rewrote the self-test to use the overlay first.
+
+FILES CHANGED
+  Keyboard.py, README.md, TROUBLESHOOTING.md, release_notes.txt
+
+
+-------------------------------------------------------------------------------
+2026-08-15 - Fix: mouse cursor trapped in window
+-------------------------------------------------------------------------------
+Follow-up fix to the input-isolation change.
+
+BUG
+  The keyboard-grab helper also called pygame.event.set_grab(True) as a
+  fallback. set_grab confines the MOUSE to the window, so while the piano was
+  focused the cursor could not leave the keyboard area and the app could only
+  be closed with Escape.
+
+FIX
+  * _set_input_grab now uses ONLY pygame.event.set_keyboard_grab (keyboard
+    only). The set_grab mouse-confine call was removed entirely.
+  * On older pygame builds without set_keyboard_grab, the grab is simply
+    skipped rather than confining the mouse. Disabling OS key-repeat still
+    applies there.
+  * README.md and TROUBLESHOOTING.md updated to state the mouse is never
+    confined.
+
+FILES CHANGED
+  Keyboard.py, README.md, TROUBLESHOOTING.md, release_notes.txt
+
+
+-------------------------------------------------------------------------------
 2026-08-15 - Bat-only build, .gitignore, version resource
 -------------------------------------------------------------------------------
 Second change set of the day (after input isolation).
