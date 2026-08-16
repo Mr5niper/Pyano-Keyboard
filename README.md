@@ -60,6 +60,9 @@ tools alongside the basic playing.
 | `F11`                          | Reset keymap to default             | Mapping     |
 | `F12`                          | Learn a custom keymap               | Mapping     |
 | `ESC`                          | Quit                                | Application |
+| `` ` `` (grave)                | Toggle key diagnostic overlay       | Diagnostic  |
+| `\` (backslash)                | Run the guided key test (8 steps)   | Diagnostic  |
+| `=`                            | Toggle Raw Input vs SDL (Windows)   | Diagnostic  |
 
 The number row, the function keys, `Tab`, `Shift`, `Space`, `Enter`,
 `Backspace`, and `Esc` are used for controls, so they cannot be assigned to
@@ -102,7 +105,8 @@ While the window is focused, the app now does two things to keep other software
 out of the way. It turns off OS key auto-repeat, so holding a key sends one
 note instead of a stream of repeated presses that could crowd out other keys.
 It also grabs the keyboard, which stops most global hotkeys, key remappers, and
-macro tools from intercepting your keystrokes while you play.
+macro tools from intercepting your keystrokes while you play. Only the keyboard
+is grabbed. The mouse cursor is never confined and can leave the window freely.
 
 The grab is released automatically when the window loses focus or is minimized,
 and taken again when you come back, so it never interferes with the rest of your
@@ -111,6 +115,16 @@ you switch away mid-chord.
 
 If a macro tool still steals keys, close it while you play. A running remapper
 can consume keys before any application sees them, this one included.
+
+### Raw Input (Windows)
+
+On Windows the app reads the keyboard through the Raw Input API, which takes key
+presses straight from the HID layer instead of through the normal Windows
+message path that SDL uses. This can recover simultaneous key presses that the
+standard path drops on some machines. It turns on automatically when available;
+the info line shows "Input: RAW" when it is active. Press `=` to switch between
+Raw and SDL if you want to compare. On other systems, or if Raw Input cannot
+start, the app uses the standard path and the toggle does nothing.
 
 ## Installation and Usage
 

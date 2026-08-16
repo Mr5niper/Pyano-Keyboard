@@ -16,11 +16,58 @@ which keys share wiring on your particular keyboard.
 
 ### Quick self-test
 
-1. Search online for "keyboard ghosting test" and open any of the rollover
-   testers.
-2. Hold the exact combination of keys that fails in the piano.
-3. If the tester also fails to show one of the keys, the limit is your keyboard.
-   The piano is receiving exactly what the keyboard sends.
+The easiest test is the built-in guided key test. With the piano window focused,
+press the backslash key (`\`) to start it. It walks you through eight steps. Each
+step names a set of keys and asks you to hold them all down at once, let go, and
+then click Next (or press Enter). Because the app records what each step asked
+for, the result is unambiguous.
+
+When you finish the last step, the app writes a file named
+`key_diagnostic_report.txt` next to the program. Open it. For every step it lists
+the keys the step asked for, the keys the app received, and the keys it actually
+played, so a dropped key is traced to one of three layers:
+
+* asked but never received: the key was lost before the app got it. That is
+  keyboard ghosting (hardware) or the SDL/OS input layer. No change inside this
+  program can recover it.
+* received but never played: the app got the key and its own logic rejected it.
+  That is a software bug, and the report prints the exact reason next to the key.
+* received and played: that key worked.
+
+The report also records the raw event order with a timestamp, scancode, and
+modifier state for each key, the mixer channel state at each note, and a short
+environment section (pygame and SDL versions, video driver, whether key-repeat
+and the keyboard grab are active). The last line is a plain verdict that says
+which layer is responsible.
+
+There is also a live overlay you can toggle any time with the grave key (`` ` ``,
+above Tab). It shows each key event as it arrives and which keys are held right
+now, which is handy for spot checks outside the guided test.
+
+You can confirm the same thing outside the app too. Search online for a "keyboard
+ghosting test," then hold a failing combination there. If keys drop in the tester
+as well, the limit is in your keyboard.
+
+### Definitive test: the raw-input probe
+
+If the in-app test shows keys as MISSING, there is one more test that says
+whether the loss is in the SDL/message layer (fixable in software) or below it
+(not fixable). The file `raw_input_test.py` reads the keyboard through the
+Windows Raw Input API, before SDL or window-message translation. Run it with:
+
+```
+python raw_input_test.py
+```
+
+Hold the same keys that fail in the piano, in the same order. The console shows a
+live "held now" list of every key raw input currently sees down, and it writes
+`raw_input_report.txt` when you close it.
+
+* If raw input shows every key you held, but the piano marked some MISSING, the
+  loss is in the SDL/message layer and the app can be switched to raw input.
+* If raw input also misses the same keys, they are lost below any software this
+  program can reach (the keyboard controller or the USB/HID stack), and no code
+  change recovers them.
 
 ### What actually fixes it
 
@@ -35,9 +82,11 @@ No software trick can recover a key the keyboard never sent.
 ## A macro tool or remapper is interfering
 
 While the piano window is focused it turns off OS key auto-repeat and grabs the
-keyboard, which bypasses most global hotkeys and remappers. If a macro utility
-still gets in the way, it is intercepting keys at a lower level than a normal
-application can reach. Close or disable that tool while you play.
+keyboard, which bypasses most global hotkeys and remappers. Only the keyboard is
+grabbed; the mouse cursor is never trapped and can leave the window at any time.
+If a macro utility still gets in the way, it is intercepting keys at a lower
+level than a normal application can reach. Close or disable that tool while you
+play.
 
 The grab is released automatically when you switch away or minimize, so it will
 not lock up the rest of your system.
