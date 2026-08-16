@@ -71,47 +71,73 @@ notes.
 ## Input Isolation and Held-Key Issues
 
 Read this if you have noticed that holding some keys stops other keys from
-sounding. There are two separate causes, and only one of them is something
-software can fix.
+sounding.
 
-### 1. Keyboard ghosting and rollover (hardware)
+### The held-key limit (hardware)
 
-Most keyboards, especially membrane and laptop keyboards, can only register a
-limited number of keys held at once, and only in certain combinations. The keys
-are wired in a grid of rows and columns. When you hold two keys that sit on the
-same row or column, a third key on a shared line can get blocked and never reach
-the computer at all.
+Most keyboards can only report a limited number of keys held at the same time,
+and only in certain combinations. The keys are wired in a grid of rows and
+columns, and keys that share a row or column cannot all be told apart when held
+together, so some are dropped before they ever reach the computer. Which
+combinations fail depends entirely on how your keyboard is wired, which is why
+the pattern often looks like fixed pairs or groups of keys that will not sound
+together.
 
-This is why the behavior looks strange. A held key blocks only some other keys,
-not all of them, and the set of blocked keys depends on how your keyboard is
-wired rather than on this program.
+This has been confirmed to be a hardware limit for the keyboard tested, not a
+bug in the code. The app reads the keyboard two different ways: the normal path
+(through SDL) and, on Windows, the Raw Input API, which reads key presses
+straight from the HID layer below SDL. On a laptop built-in keyboard, a dropped
+key was missing from both paths, which means the loss happened in the keyboard
+or USB layer before any software this program can reach. The app's own key test
+(see below) confirms it plays every key it actually receives.
 
-To check whether this is your problem, search for a "keyboard ghosting test"
-online, then hold the same combination that fails in the piano. If keys drop in
-the tester too, the limit is in your keyboard.
+Laptop built-in keyboards and membrane keyboards are the usual culprits; their
+matrices are wired for typing, not for many simultaneous keys. A "gaming" or
+"mechanical" label does not automatically make a keyboard immune, but it does
+not doom it either. If a gaming keyboard drops keys, check its rollover mode
+before concluding the hardware cannot do it (see below).
 
-What actually helps:
+### What actually fixes it
 
-* Use a keyboard rated for N-key rollover (NKRO) or at least 6-key rollover.
-  Most gaming mechanical keyboards qualify.
-* Choose fingerings that avoid the combinations your keyboard drops.
+* Use a keyboard with true **N-key rollover (NKRO)**. NKRO keyboards report
+  every key independently, so held-key drops go away.
+* **6-key rollover (6KRO)** helps but is not a full fix: it guarantees six
+  arbitrary keys plus modifiers, which covers most chords but can still drop the
+  seventh key.
+* A "gaming" or "mechanical" label does not guarantee NKRO, and it does not rule
+  it out. Many such keyboards ship in a 6KRO USB "boot" mode by default and only
+  do full NKRO once you enable it. If yours has a companion app (for example
+  Logitech G HUB) or an NKRO toggle (often an Fn key combination), turn NKRO on
+  and run the key test again before deciding it is a hardware limit.
+* Membrane and laptop keyboards generally cannot be fixed. Their matrices are
+  wired for typing, not for many simultaneous keys.
+* If you are stuck with the keyboard you have, you can re-finger chords to avoid
+  the specific combinations it drops, or remap notes with `F12` onto keys that
+  do not collide, once the key test tells you which keys conflict.
 
 There is no software workaround for a hardware wiring limit. A key the keyboard
-never sends cannot be recovered.
+never sends cannot be recovered by any program. What the key test cannot tell
+you is whether a keyboard's limit is permanent or just its current mode, so on a
+keyboard that has an NKRO setting, enable it and retest before giving up on it.
 
-### 2. Macros, OS key rules, and auto-repeat (software)
+### Diagnosing your keyboard
 
-While the window is focused, the app now does two things to keep other software
-out of the way. It turns off OS key auto-repeat, so holding a key sends one
-note instead of a stream of repeated presses that could crowd out other keys.
-It also grabs the keyboard, which stops most global hotkeys, key remappers, and
-macro tools from intercepting your keystrokes while you play. Only the keyboard
-is grabbed. The mouse cursor is never confined and can leave the window freely.
+Press the backslash key (`\`) in the app to run the guided key test. It walks
+you through several held-key combinations and writes `key_diagnostic_report.txt`
+next to the program, listing exactly which keys were dropped in each
+combination. That tells you which chords your keyboard cannot play. There is
+also a live overlay on the grave key (`` ` ``) and a standalone probe,
+`raw_input_test.py`; see TROUBLESHOOTING.md for details.
 
-The grab is released automatically when the window loses focus or is minimized,
-and taken again when you come back, so it never interferes with the rest of your
-system. All held notes are released on focus loss as well, so nothing sticks if
-you switch away mid-chord.
+### Macros, OS key rules, and auto-repeat (software)
+
+While the window is focused, the app turns off OS key auto-repeat, so holding a
+key sends one note instead of a stream of repeats, and it grabs the keyboard so
+global hotkeys, key remappers, and macro tools are less able to intercept your
+keystrokes. Only the keyboard is grabbed. The mouse cursor is never confined and
+can leave the window freely. The grab is released automatically when the window
+loses focus or is minimized and taken again when you return, and all held notes
+are released on focus loss so nothing sticks if you switch away mid-chord.
 
 If a macro tool still steals keys, close it while you play. A running remapper
 can consume keys before any application sees them, this one included.
@@ -119,14 +145,16 @@ can consume keys before any application sees them, this one included.
 ### Raw Input (Windows)
 
 On Windows the app reads the keyboard through the Raw Input API, which takes key
-presses straight from the HID layer instead of through the normal Windows
-message path that SDL uses. This can recover simultaneous key presses that the
-standard path drops on some machines. It turns on automatically when available;
-the info line shows "Input: RAW" when it is active. Press `=` to switch between
-Raw and SDL if you want to compare. On other systems, or if Raw Input cannot
-start, the app uses the standard path and the toggle does nothing.
+presses straight from the HID layer instead of the normal Windows message path
+that SDL uses. It turns on automatically when available, and the info line shows
+"Input: RAW" when it is active. Press `=` to switch between Raw and SDL. On other
+systems, or if Raw Input cannot start, the app uses the standard path and the
+toggle does nothing. Note that Raw Input does not cure the held-key limit
+described above, because that loss happens below this layer too; it is the
+better input path in general and is used to prove where a dropped key is lost.
 
 ## Installation and Usage
+
 
 Requirements:
 

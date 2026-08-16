@@ -9,6 +9,28 @@ actually changed.
 
 
 -------------------------------------------------------------------------------
+2026-08-15 - Correct held-key documentation
+-------------------------------------------------------------------------------
+Tightened README and TROUBLESHOOTING to state only what the evidence supports.
+
+  * The confirmed hardware result is from a LAPTOP BUILT-IN keyboard: the
+    dropped keys were missing from both the SDL path and the Windows Raw Input
+    path, so on that keyboard the loss is below all app-reachable software.
+  * Removed the overclaim that gaming/mechanical keyboards fail; that was not
+    tested and is not implied by the laptop result. Docs now say a gaming label
+    neither guarantees nor rules out the problem.
+  * Added accurate rollover guidance: true NKRO fixes it; 6KRO helps but can
+    still drop a 7th key; many gaming keyboards default to 6KRO "boot" mode and
+    need NKRO enabled (e.g. via G HUB or an Fn toggle) - so enable NKRO and
+    retest before concluding a given keyboard is limited.
+  * Dropped the "ghosting" framing as the lead term and the stale "SDL might be
+    the cause / app can switch to raw input" hedging, since the raw-input path
+    now exists and the test classifies the layer directly.
+
+FILES CHANGED
+  README.md, TROUBLESHOOTING.md, release_notes.txt
+
+-------------------------------------------------------------------------------
 2026-08-15 - Fix: '=' would not toggle Raw Input back off
 -------------------------------------------------------------------------------
 BUG
