@@ -1,0 +1,175 @@
+===============================================================================
+PC Keyboard Piano - Release Notes
+===============================================================================
+This file is ongoing. Newest entries at the top.
+
+The history below (Dec 14-15, 2025) was reconstructed from the full commit
+diffs, not just the commit messages. Descriptions reflect what the code
+actually changed.
+
+
+-------------------------------------------------------------------------------
+2026-08-15 - Input isolation & held-key investigation
+-------------------------------------------------------------------------------
+Branch: usr/mr5/input-isolation
+
+FOCUS
+  Reported problem: holding certain keys prevents other keys from sounding;
+  the blocking is partial and inconsistent (only some keys, not always).
+
+ROOT CAUSE (main symptom)
+  Keyboard GHOSTING / rollover - a HARDWARE limit, not a bug in this program.
+  On most membrane/laptop keyboards, keys share rows/columns in a wiring
+  matrix, so certain simultaneous combinations physically cannot be reported to
+  the computer. The current event-driven input path (per-keycode tracking in
+  pressed_kc) is correct and does not block notes on its own. Documented in
+  README.md ("Input Isolation & Held-Key Issues") and TROUBLESHOOTING.md.
+  Software cannot override a hardware matrix limit; an NKRO/6KRO keyboard is
+  the real fix.
+
+  Context from history: an earlier attempt at OS-level key control (the
+  `keyboard`-library KeyboardBlocker, commits bc2cbda/7611c45) was removed in
+  e078738 - it required admin rights and used a fragile global hook. Today's
+  change is the lighter-weight successor: an SDL keyboard grab that needs no
+  admin and releases automatically on focus loss.
+
+SOFTWARE CHANGES (the "cut off macros / keyboard rules" request)
+  * Disabled OS keyboard auto-repeat via pygame.key.set_repeat(0). One physical
+    press now yields one note-on instead of a stream of synthetic repeats that
+    could crowd out other keys.
+  * Added keyboard grab while the window is focused. New helper
+    PianoApp._set_input_grab() calls pygame.event.set_keyboard_grab() (with
+    set_grab() as a fallback) so macros, remappers, and global hotkeys are far
+    less able to intercept keys during play. Version-safe via hasattr guards.
+    No admin rights required (unlike the old KeyboardBlocker).
+  * Grab releases automatically on focus loss / minimize, re-applies on focus
+    gain, and releases on app exit (__exit__), so it never locks up the system.
+
+BUG FIXES
+  * Fixed broken focus-loss detection that shipped in e078738. The check
+    `event.type == getattr(pygame, 'WINDOWFOCUSLOST', None)` compared event.type
+    against None on pygame builds lacking that constant (so it never matched)
+    and never handled focus GAIN. Rewritten with safe sentinel lookups for
+    WINDOWFOCUSLOST / WINDOWFOCUSGAINED / WINDOWMINIMIZED: flush held notes and
+    drop the grab on loss/minimize, re-grab on gain.
+  * Keyboard.spec: fixed the entry-point/icon casing regression introduced in
+    a2cb583. Restored 'Keyboard.py' (was reverted to 'keyboard.py') and set the
+    icon to 'icon.ico' (was 'Icon.ico'). Casing mismatches broke builds on
+    case-sensitive setups.
+
+DOCUMENTATION
+  * README.md rewritten: added Input Isolation & Held-Key Issues section,
+    corrected run command to `python Keyboard.py`, corrected supported range
+    wording (C1-C8 / MIDI 24-108), completed the controls table (F11 reset,
+    F12 learn, keys 5-9), noted reserved keys.
+  * Added TROUBLESHOOTING.md focused on the ghosting question with a self-test.
+
+FILES CHANGED
+  Keyboard.py, Keyboard.spec, README.md, release_notes.txt (new),
+  TROUBLESHOOTING.md (new)
+
+NOTES / NEXT IDEAS (not yet implemented)
+  * Optional on-screen "keys currently held" counter to visualize the rollover
+    ceiling.
+  * Optional toggle to disable the keyboard grab for users who want global
+    hotkeys active while playing.
+
+
+===============================================================================
+HISTORY - reconstructed from full commit diffs
+===============================================================================
+
+-------------------------------------------------------------------------------
+2025-12-15 08:02  3113faa  Keycode remapping + event-driven input (final of day)
+-------------------------------------------------------------------------------
+  The largest and most significant pre-existing change. Two big things:
+  * Replaced per-frame POLLING (_scan_notes reading key.get_pressed each frame)
+    with EVENT-DRIVEN input: handle_note_on_kc / handle_note_off_kc driven by
+    pygame KEYDOWN / KEYUP. This is the current input architecture.
+  * Added a REMAPPABLE KEYMAP system keyed by keycode (not character):
+    DEFAULT_KC_TO_MIDI, load_user_keymap / save_user_keymap backed by
+    keymap.json, a RESERVED_KC set, live "mapping mode" (F12 to learn, F11 to
+    reset), and key labels drawn from pygame.key.name().
+
+-------------------------------------------------------------------------------
+2025-12-15 07:48  2411068  Char->keycode map + focus flush (interim)
+-------------------------------------------------------------------------------
+  Interim step toward keycode input. Added a character->keycode table and a
+  _scan_notes polling routine with _last_down tracking, plus a focus check that
+  flushed notes when the window was not focused. Superseded ~15 minutes later
+  by 3113faa's event-driven rewrite.
+
+-------------------------------------------------------------------------------
+2025-12-15 07:36  a2cb583  Spec revert (introduced the casing regression)
+-------------------------------------------------------------------------------
+  Reverted the build spec: changed entry point back to lowercase 'keyboard.py'
+  and removed the pygame collect_all() data bundling that f025398 had added.
+  This is the source of the filename/icon casing bug fixed on 2026-08-15.
+
+-------------------------------------------------------------------------------
+2025-12-15 07:35  516fa60  Add icon.ico
+-------------------------------------------------------------------------------
+  Added the application icon (32,988 bytes).
+
+-------------------------------------------------------------------------------
+2025-12-15 05:13  e078738  Remove KeyboardBlocker; add focus-flush (net -207)
+-------------------------------------------------------------------------------
+  Major reduction. Removed the low-level global-hook approach entirely: the
+  `keyboard` library import, the _is_admin() check, and the KeyboardBlocker
+  class that blocked Windows keys / system hotkeys. In its place added the
+  lighter _flush_all_pressed() helper and the on-focus-loss note flush - which
+  shipped with the WINDOWFOCUSLOST == None bug later fixed on 2026-08-15.
+
+-------------------------------------------------------------------------------
+2025-12-15 04:20  f025398  Spec: proper pygame bundling
+-------------------------------------------------------------------------------
+  Improved the build spec: added `from PyInstaller.utils.hooks import
+  collect_all` and wired pygame's binaries/datas/hiddenimports into the build.
+  Also (correctly) used 'Keyboard.py' as the entry point. Later reverted by
+  a2cb583.
+
+-------------------------------------------------------------------------------
+2025-12-15 04:20  47279bf  requirements: add pyinstaller
+-------------------------------------------------------------------------------
+  Added pyinstaller to requirements.txt.
+
+-------------------------------------------------------------------------------
+2025-12-15 03:40  7611c45  KeyboardBlocker: admin check + more blocked combos
+-------------------------------------------------------------------------------
+  Extended the (then-present) KeyboardBlocker: added an _is_admin() check via
+  ctypes and expanded the set of blocked system/shell/overlay/snap/screenshot
+  hotkey combinations.
+
+-------------------------------------------------------------------------------
+2025-12-15 03:35  bc2cbda  Add KeyboardBlocker (global hotkey blocking)
+-------------------------------------------------------------------------------
+  Added the first "cut off system keys" attempt: imported the low-level
+  `keyboard` library, added a KeyboardBlocker class to block the Windows keys
+  and common system/global hotkey combos, requested an SDL keyboard/mouse grab
+  (set_grab), and added an F12 toggle for the block. (All removed in e078738.)
+
+-------------------------------------------------------------------------------
+2025-12-15 03:22  5c87998  Trim per-key elif input chain (net -249)
+-------------------------------------------------------------------------------
+  Large removal that stripped out the long hardcoded per-key elif chain
+  (K_SEMICOLON / K_QUOTE / K_LEFTBRACKET, etc.) from the event loop as part of
+  moving away from the original character-based input handling.
+
+-------------------------------------------------------------------------------
+2025-12-15 00:12-00:43  README / requirements / QUICK_START created + edited
+-------------------------------------------------------------------------------
+  add6eed  Create README.md         (+117)  Initial project README.
+  ced1144  Create requirements.txt  (+4)    numpy, pygame, soundfile, pydub.
+  44dcd41  Create QUICK_START.md    (+58)   Initial PyInstaller build guide.
+  fa83e45  Update QUICK_START.md    (+3/-4) Build-guide edits.
+  782fc23  Update QUICK_START.md    (+1/-1) Minor build-guide fix.
+  e0e2e38  Update QUICK_START.md    (+1/-1) Minor build-guide fix.
+
+-------------------------------------------------------------------------------
+2025-12-14 23:57  12bb212  Initial import
+-------------------------------------------------------------------------------
+  First upload: Keyboard.py (1,635 lines) and Keyboard.spec (38 lines). Already
+  a full app - NumPy synth with harmonic series + ADSR, stereo reverb,
+  metronome with count-in, threaded Recorder with overdub/takes/undo, WAV/MP3
+  export, WASAPI/CoreAudio driver selection, and character-based keyboard input
+  (a hardcoded per-key elif chain).

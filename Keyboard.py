@@ -871,6 +871,20 @@ class PianoApp:
     def __init__(self, audio_config: AudioConfig):
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("PC Keyboard Piano | Grandmaster Build")
+
+        # --- Input isolation (prevents macros / OS key rules from interfering) ---
+        # 1) Disable OS keyboard auto-repeat. Without this, the OS injects a stream
+        #    of synthetic KEYDOWN events for a held key, which can look like extra
+        #    presses and can starve/mask other keys. We want ONE keydown per press.
+        try:
+            pygame.key.set_repeat(0)  # 0 = off
+        except Exception:
+            pass
+        # 2) Grab the keyboard while the window is focused so global hotkeys,
+        #    remappers, and macro tools are less able to intercept keys mid-play.
+        #    Released automatically when focus is lost (see _set_input_grab).
+        self._input_grabbed = False
+        self._set_input_grab(True)
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(None, 28)
         self.small_font = pygame.font.Font(None, 22)
@@ -959,6 +973,10 @@ class PianoApp:
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
             try:
+                self._set_input_grab(False)
+            except Exception:
+                pass
+            try:
                 self.synth.clear_cache()
             except Exception:
                 pass
@@ -1027,6 +1045,24 @@ class PianoApp:
             else:
                 name = ''
             key.kb = name
+
+    def _set_input_grab(self, grab: bool):
+        # Grab/release the keyboard+mouse so external key rules interfere less.
+        # Safe on all pygame versions: newer ones expose set_keyboard_grab;
+        # older ones only have set_grab (mouse). We try both, ignore failures.
+        if grab == self._input_grabbed:
+            return
+        try:
+            if hasattr(pygame.event, "set_keyboard_grab"):
+                pygame.event.set_keyboard_grab(grab)
+        except Exception:
+            pass
+        try:
+            if hasattr(pygame.event, "set_grab"):
+                pygame.event.set_grab(grab)
+        except Exception:
+            pass
+        self._input_grabbed = grab
 
     def _flush_all_pressed(self):
         # Release any pressed keyboard notes (by keycode)
@@ -1209,11 +1245,24 @@ class PianoApp:
                     self.metronome.click()
                     continue
 
-                # Focus loss -> flush notes so nothing sticks
-                if event.type == getattr(pygame, 'WINDOWFOCUSLOST', None) or (
+                # --- Window focus handling ---
+                # On focus LOSS: release all held notes (so nothing sticks) and
+                # release the keyboard grab so the user can use other apps.
+                # On focus GAIN: re-grab the keyboard so macros/hotkeys are
+                # suppressed again while playing.
+                _wfl = getattr(pygame, 'WINDOWFOCUSLOST', -1)
+                _wfg = getattr(pygame, 'WINDOWFOCUSGAINED', -1)
+                _wmin = getattr(pygame, 'WINDOWMINIMIZED', -1)
+                if event.type in (_wfl, _wmin) or (
                     event.type == pygame.ACTIVEEVENT and getattr(event, 'state', 0) & 2 and getattr(event, 'gain', 1) == 0
                 ):
                     self._flush_all_pressed()
+                    self._set_input_grab(False)
+                    continue
+                if event.type == _wfg or (
+                    event.type == pygame.ACTIVEEVENT and getattr(event, 'state', 0) & 2 and getattr(event, 'gain', 1) == 1
+                ):
+                    self._set_input_grab(True)
                     continue
 
                 # --- Keyboard Input ---

@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 a = Analysis(
-    ['keyboard.py'],
+    ['Keyboard.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -21,7 +21,6 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    # --- CHANGE THIS LINE ---
     name='Pyano Keyboard',
     debug=False,
     bootloader_ignore_signals=False,
@@ -35,5 +34,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='Icon.ico'
+    icon='icon.ico'
 )
