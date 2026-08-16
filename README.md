@@ -1,6 +1,6 @@
 # Pyano Keyboard
 
-<img width="1402" height="732" alt="image" src="https://github.com/user-attachments/assets/97841cee-43b5-43b6-b46f-bd02be917bde" />
+<img width="2454" height="1281" alt="image" src="https://github.com/user-attachments/assets/a1da9b7f-55c9-459e-adce-f2505aba07c7" />
 
 A playable piano you control from your computer keyboard. It uses a custom NumPy
 synth engine and is drawn with Pygame, and it includes recording and export
