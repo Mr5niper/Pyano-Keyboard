@@ -3,6 +3,8 @@
 *.spec
 build/
 dist/
+# icon_win.png is generated from icon.ico at build time and deleted afterward.
+icon_win.png
 
 # ---- Virtual environments ----
 .venv/
