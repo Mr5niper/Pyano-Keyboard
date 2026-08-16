@@ -9,6 +9,40 @@ actually changed.
 
 
 -------------------------------------------------------------------------------
+2026-08-15 - Bat-only build, .gitignore, version resource
+-------------------------------------------------------------------------------
+Second change set of the day (after input isolation).
+
+BUILD
+  * Added BUILD_EXE.bat: a double-click Windows build script modeled on the
+    other repos in the collection. It locates Python 3.13.12 through the "py"
+    launcher (so Python does not need to be on PATH), creates and activates a
+    .venv, installs requirements plus PyInstaller into it, and builds a
+    one-file --windowed exe named "Pyano Keyboard".
+  * The build does NOT use a tracked .spec file. PyInstaller generates one from
+    the command-line flags each run, so there is nothing extra to keep in the
+    repo. Icon and version resource are attached only if icon.ico / version.txt
+    are present.
+  * Added version.txt (PyInstaller version resource, 1.0.0.0) so the exe gets
+    proper Windows file-details.
+
+REPO HYGIENE
+  * Added .gitignore covering the generated .spec (*.spec), virtual environments
+    (.venv/, venv/, env/), PyInstaller output (build/, dist/), Python caches,
+    app-generated runtime files (keymap.json, recordings/), and common OS/editor
+    cruft.
+  * Stopped shipping Keyboard.spec. It is now generated at build time and
+    ignored by git.
+
+DOCS
+  * Rewrote QUICK_START.md for the new double-click, spec-less build flow.
+
+FILES CHANGED
+  BUILD_EXE.bat (new), .gitignore (new), version.txt (new), QUICK_START.md,
+  release_notes.txt; Keyboard.spec removed from tracking.
+
+
+-------------------------------------------------------------------------------
 2026-08-15 - Input isolation & held-key investigation
 -------------------------------------------------------------------------------
 Branch: usr/mr5/input-isolation
