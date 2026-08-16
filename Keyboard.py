@@ -19,6 +19,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pc_keyboard_piano")
 
 
+def resource_path(name):
+    # Locate a bundled data file both when running from source and when frozen
+    # by PyInstaller. In a one-file exe, data added with --add-data is unpacked
+    # to a temp dir exposed as sys._MEIPASS; otherwise use the script's folder.
+    try:
+        base = sys._MEIPASS  # set by PyInstaller at runtime
+    except Exception:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, name)
+
+
 # ============================================================================
 # Windows Raw Input keyboard reader
 # ----------------------------------------------------------------------------
@@ -348,6 +359,10 @@ if not AUDIO.ok:
 # -------------------------
 # UI Constants
 # -------------------------
+APP_NAME = "Pyano Keyboard"
+APP_VERSION = "1.0.0.0"
+APP_BUILD_DATE = "8-16-2026"
+APP_TITLE = f"{APP_NAME} v{APP_VERSION} ({APP_BUILD_DATE})"
 WIDTH, HEIGHT = 1400, 700
 BACKGROUND = (18, 18, 18)
 WHITE = (250, 250, 250)
@@ -1079,8 +1094,37 @@ class PianoApp:
     }
 
     def __init__(self, audio_config: AudioConfig):
+        # On Windows, give the app its own taskbar identity so it does not group
+        # under the generic Python/pygame icon and uses the app icon instead.
+        if sys.platform.startswith("win"):
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                    "Mr5niper.PyanoKeyboard.1")
+            except Exception:
+                pass
+        # Set the window icon BEFORE creating the window so it applies to the
+        # title bar, the taskbar, and any popups the program draws.
+        # NOTE: pygame/SDL cannot decode PNG-compressed .ico entries (modern
+        # icon editors export those), so it may load blank/wrong pixels from a
+        # .ico. We load a plain PNG for the window icon instead, which pygame
+        # decodes reliably, and keep icon.ico only for the exe's own icon.
+        try:
+            icon_img = None
+            for cand in ("icon_win.png", "icon.png", "icon.ico"):
+                p = resource_path(cand)
+                if os.path.exists(p):
+                    try:
+                        icon_img = pygame.image.load(p)
+                        break
+                    except Exception:
+                        continue
+            if icon_img is not None:
+                pygame.display.set_icon(icon_img)
+        except Exception as e:
+            logger.warning("Could not load window icon: %s", e)
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Pyano Keyboard | Grandmaster Build")
+        pygame.display.set_caption(APP_TITLE)
 
         # --- Input isolation (prevents macros / OS key rules from interfering) ---
         # 1) Disable OS keyboard auto-repeat. Without this, the OS injects a stream

@@ -9,6 +9,78 @@ actually changed.
 
 
 -------------------------------------------------------------------------------
+2026-08-16 - Fix stale build/icon docs
+-------------------------------------------------------------------------------
+  * README "Building an Executable" still said the build uses Keyboard.spec.
+    That is wrong since the bat-only build - PyInstaller generates the spec
+    from CLI flags and no .spec is tracked. Rewrote the section to describe the
+    double-click build and added an "About the icon" note explaining the
+    icon.ico -> icon_win.png workflow.
+  * Verified the rest: controls table (grave, backslash, = toggle), Raw Input
+    section, held-key limitation, 8-step key test count, and all file
+    references are current.
+
+FILES CHANGED
+  README.md, release_notes.txt
+
+-------------------------------------------------------------------------------
+2026-08-16 - Auto-generate the window-icon PNG at build time
+-------------------------------------------------------------------------------
+So updating the icon stays a one-file job (just replace icon.ico with your
+editor as usual):
+
+  * Added make_iconpng.py, which extracts the largest PNG-compressed image from
+    icon.ico and writes icon_win.png.
+  * BUILD_EXE.bat runs it automatically before building, then DELETES
+    icon_win.png after PyInstaller has bundled it. The PNG is a temporary build
+    artifact: not tracked in git (added to .gitignore) and not left in the
+    folder afterward. icon.ico is the single source of truth.
+  * The build captures PyInstaller's exit code before deleting the PNG, so
+    cleanup cannot hide a build failure.
+  * You never maintain icon_win.png by hand; update icon.ico and rebuild.
+
+FILES CHANGED
+  BUILD_EXE.bat, make_iconpng.py (new), .gitignore, release_notes.txt
+
+-------------------------------------------------------------------------------
+2026-08-16 - Fix window icon not updating (PNG-in-ICO)
+-------------------------------------------------------------------------------
+CAUSE
+  The updated icon.ico stores its images as PNG-compressed entries (modern icon
+  editors export those). pygame/SDL cannot decode PNG-compressed .ico entries,
+  so pygame.display.set_icon(pygame.image.load("icon.ico")) loaded blank/wrong
+  pixels and the window/popup icon did not change even after rebuilding.
+
+FIX
+  * The window icon now loads from a plain PNG (icon_win.png), which pygame
+    decodes reliably, falling back to icon.png then icon.ico. icon.ico is still
+    used for the exe's own icon via --icon.
+  * Added icon_win.png (256x256, extracted from icon.ico) to the repo.
+  * BUILD_EXE.bat now bundles icon_win.png with --add-data when present, so the
+    window icon works from the one-file exe too.
+
+FILES CHANGED
+  Keyboard.py, BUILD_EXE.bat, icon.ico (updated art), icon_win.png (new),
+  release_notes.txt
+
+-------------------------------------------------------------------------------
+2026-08-16 - Window icon and versioned title
+-------------------------------------------------------------------------------
+  * The app now sets its window icon from the bundled icon.ico via
+    pygame.display.set_icon(), so the title bar and any popups show the app
+    icon instead of the default pygame icon. A resource_path() helper locates
+    the icon both when run from source and inside the PyInstaller one-file exe
+    (sys._MEIPASS). The build already ships icon.ico with --add-data.
+  * On Windows, set an explicit AppUserModelID so the taskbar uses the app icon
+    and does not group under the generic Python icon.
+  * Window title now shows the version and build date -
+    "Pyano Keyboard v1.0.0.0 (8-16-2026)" - instead of "Grandmaster Build".
+    Version and date live in APP_VERSION / APP_BUILD_DATE constants.
+
+FILES CHANGED
+  Keyboard.py, release_notes.txt
+
+-------------------------------------------------------------------------------
 2026-08-15 - Use the correct program name everywhere
 -------------------------------------------------------------------------------
 Renamed the leftover "PC Keyboard Piano" strings to "Pyano Keyboard" so the app,

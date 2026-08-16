@@ -116,21 +116,43 @@ set "HAVE_VER=0"
 if exist "%ICON%" set "HAVE_ICON=1"
 if exist "%VERSION_FILE%" set "HAVE_VER=1"
 
-if "!HAVE_ICON!!HAVE_VER!"=="11" (
-    echo [INFO] Building with icon and version info.
-    pyinstaller --onefile --windowed --clean --noconfirm --noupx --add-data "%ICON%;." --icon "%ICON%" --version-file "%VERSION_FILE%" --name "%EXE_NAME%" "%SCRIPT_NAME%"
-) else if "!HAVE_ICON!"=="1" (
-    echo [INFO] %VERSION_FILE% missing - building without version metadata.
-    pyinstaller --onefile --windowed --clean --noconfirm --noupx --add-data "%ICON%;." --icon "%ICON%" --name "%EXE_NAME%" "%SCRIPT_NAME%"
-) else if "!HAVE_VER!"=="1" (
-    echo [INFO] %ICON% missing - building without a custom icon.
-    pyinstaller --onefile --windowed --clean --noconfirm --noupx --version-file "%VERSION_FILE%" --name "%EXE_NAME%" "%SCRIPT_NAME%"
-) else (
-    echo [INFO] %ICON% and %VERSION_FILE% missing - building bare.
-    pyinstaller --onefile --windowed --clean --noconfirm --noupx --name "%EXE_NAME%" "%SCRIPT_NAME%"
+:: The window icon is loaded at runtime from a PNG, because pygame/SDL cannot
+:: decode PNG-compressed .ico entries (which most icon editors now export).
+:: Regenerate icon_win.png from the current icon.ico automatically so you only
+:: ever have to update icon.ico. If icon.ico has no PNG-compressed image, any
+:: existing icon_win.png is left as-is.
+if "!HAVE_ICON!"=="1" (
+    if exist "make_iconpng.py" (
+        echo [INFO] Refreshing window-icon PNG from %ICON%...
+        python make_iconpng.py "%ICON%" "icon_win.png"
+    )
 )
 
-if errorlevel 1 (
+:: Bundle icon_win.png when present.
+set "PNG_DATA="
+if exist "icon_win.png" set "PNG_DATA=--add-data icon_win.png;."
+
+if "!HAVE_ICON!!HAVE_VER!"=="11" (
+    echo [INFO] Building with icon and version info.
+    pyinstaller --onefile --windowed --clean --noconfirm --noupx --add-data "%ICON%;." !PNG_DATA! --icon "%ICON%" --version-file "%VERSION_FILE%" --name "%EXE_NAME%" "%SCRIPT_NAME%"
+) else if "!HAVE_ICON!"=="1" (
+    echo [INFO] %VERSION_FILE% missing - building without version metadata.
+    pyinstaller --onefile --windowed --clean --noconfirm --noupx --add-data "%ICON%;." !PNG_DATA! --icon "%ICON%" --name "%EXE_NAME%" "%SCRIPT_NAME%"
+) else if "!HAVE_VER!"=="1" (
+    echo [INFO] %ICON% missing - building without a custom icon.
+    pyinstaller --onefile --windowed --clean --noconfirm --noupx !PNG_DATA! --version-file "%VERSION_FILE%" --name "%EXE_NAME%" "%SCRIPT_NAME%"
+) else (
+    echo [INFO] %ICON% and %VERSION_FILE% missing - building bare.
+    pyinstaller --onefile --windowed --clean --noconfirm --noupx !PNG_DATA! --name "%EXE_NAME%" "%SCRIPT_NAME%"
+)
+
+:: Capture the build result, then remove the generated window-icon PNG. It is a
+:: temporary artifact (regenerated from icon.ico each build), so it must not be
+:: left in the folder or tracked in git.
+set "BUILD_RC=!errorlevel!"
+if exist "icon_win.png" del "icon_win.png" >nul 2>&1
+
+if not "!BUILD_RC!"=="0" (
     echo =======================================================
     echo [ERROR] PyInstaller build failed. Scroll up for the error.
     goto :error
