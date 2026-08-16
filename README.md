@@ -1,4 +1,4 @@
-# PC Keyboard Piano
+# Pyano Keyboard
 
 <img width="1402" height="732" alt="image" src="https://github.com/user-attachments/assets/97841cee-43b5-43b6-b46f-bd02be917bde" />
 
