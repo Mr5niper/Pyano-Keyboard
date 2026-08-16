@@ -207,5 +207,18 @@ PIANO_MIXER_BUFFER=128 python Keyboard.py
 
 ## Building an Executable
 
-See `QUICK_START.md`. The build uses `Keyboard.spec`, with `Keyboard.py` as the
-entry point and `icon.ico` as the icon.
+Double-click `BUILD_EXE.bat` (Windows). It finds Python 3.13.12 through the `py`
+launcher, creates a virtual environment, installs the dependencies plus
+PyInstaller, and builds a one-file `dist\Pyano Keyboard.exe`. There is no tracked
+`.spec` file; PyInstaller generates the build settings from command-line flags
+each run. The build also regenerates the runtime window icon from `icon.ico`
+(see below) and cleans it up afterward. Full details are in `QUICK_START.md`.
+
+### About the icon
+
+`icon.ico` is the single icon source. It sets the executable's own icon (shown
+in Explorer and the taskbar). Because pygame cannot decode the PNG-compressed
+images that modern icon editors put inside `.ico` files, the app loads its
+in-window/title-bar icon from a plain PNG instead. The build generates that PNG
+(`icon_win.png`) from `icon.ico` automatically via `make_iconpng.py`, bundles it,
+and deletes it afterward, so you only ever edit `icon.ico`.
